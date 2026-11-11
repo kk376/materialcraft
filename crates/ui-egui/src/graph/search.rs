@@ -20,21 +20,53 @@ pub(super) fn open_search_to(app: &mut MaterialCraftApp, ctx: &egui::Context, at
     }
 }
 
-/// Catalog entries matching `text` (label or id contains every word)
+/// Catalog entries matching `text` using fuzzy subsequence scoring
 pub(super) fn matches(text: &str) -> Vec<&'static materialcraft_engine::nodes::NodeDefinition> {
-    let words: Vec<String> = text.split_whitespace().map(str::to_ascii_lowercase).collect();
-    let mut v: Vec<_> = materialcraft_engine::nodes::catalog()
-        .iter()
-        .filter(|d| d.id != "graph_instance")
-        .filter(|d| {
-            let hay = format!("{} {} {}", d.label.to_ascii_lowercase(), d.id, d.category.to_ascii_lowercase());
-            words.iter().all(|w| hay.contains(w.as_str()))
+    let text = text.trim();
+    let catalog = materialcraft_engine::nodes::catalog().iter().filter(|d| d.id != "graph_instance");
+    if text.is_empty() {
+        return catalog.collect();
+    }
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut scored: Vec<(i32, &'static materialcraft_engine::nodes::NodeDefinition)> = catalog
+        .filter_map(|d| {
+            let whole_score = crate::fuzzy::fuzzy_score(d.label, text)
+                .max(crate::fuzzy::fuzzy_score(d.id, text))
+                .max(crate::fuzzy::fuzzy_score(d.category, text).map(|s| s.saturating_sub(20)));
+
+            let cross_score = if words.len() > 1 {
+                let mut total = 0i32;
+                let mut all_matched = true;
+                for w in &words {
+                    let w_score = crate::fuzzy::fuzzy_score(d.label, w)
+                        .max(crate::fuzzy::fuzzy_score(d.id, w))
+                        .max(crate::fuzzy::fuzzy_score(d.category, w).map(|s| s.saturating_sub(20)));
+                    match w_score {
+                        Some(s) => total = total.saturating_add(s),
+                        None => {
+                            all_matched = false;
+                            break;
+                        }
+                    }
+                }
+                if all_matched { Some(total) } else { None }
+            } else {
+                None
+            };
+
+            let score = match (whole_score, cross_score) {
+                (Some(w), Some(c)) => Some(w.max(c)),
+                (Some(w), None) => Some(w),
+                (None, Some(c)) => Some(c),
+                (None, None) => None,
+            };
+
+            score.map(|s| (s, d))
         })
         .collect();
-    if let Some(w) = words.first() {
-        v.sort_by_key(|d| !d.label.to_ascii_lowercase().starts_with(w.as_str()));
-    }
-    v
+
+    scored.sort_by(|(score_a, a), (score_b, b)| score_b.cmp(score_a).then_with(|| a.label.cmp(b.label)));
+    scored.into_iter().map(|(_, d)| d).collect()
 }
 
 pub(super) fn show(app: &mut MaterialCraftApp, ui: &mut Ui, cam: &GraphCamera) {
