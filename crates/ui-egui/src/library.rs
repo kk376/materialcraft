@@ -244,24 +244,28 @@ fn category_tree(app: &mut MaterialCraftApp, ui: &mut Ui, entries: &[LibraryEntr
 
 /// Matching entries ordered by their displayed names in tiles and list views.
 pub(crate) fn visible<'a>(app: &MaterialCraftApp, entries: &'a [LibraryEntry], target: &LibraryTarget) -> Vec<&'a LibraryEntry> {
-    let search = app.ui.library_search.trim().to_lowercase();
+    let search = app.ui.library_search.trim();
+    let is_searching = !search.is_empty();
     let category = app.ui.library_category.as_str();
-    let mut visible: Vec<_> = entries
+    let mut visible: Vec<&'a LibraryEntry> = entries
         .iter()
         .filter(|entry| app.ui.library_show_missing || entry.missing.is_none())
         .filter(|entry| app.ui.library_show_other || entry.canvas == LibraryCanvas::Any || entry.canvas == target.canvas)
         .filter(|entry| {
-            if !search.is_empty() {
-                return tr(&entry.label).to_lowercase().contains(&search) || entry.id.to_lowercase().contains(&search);
-            }
-
-            match category {
-                "" => true,
-                FAVORITES => app.ui.library_favorites.contains(&entry.id),
-                category => entry.category == category || entry.category.strip_prefix(category).is_some_and(|rest| rest.starts_with('/')),
+            if is_searching {
+                crate::fuzzy::fuzzy_score(&tr(&entry.label), search).is_some()
+                    || crate::fuzzy::fuzzy_score(&entry.id, search).is_some()
+                    || crate::fuzzy::fuzzy_score(&entry.category, search).is_some()
+            } else {
+                match category {
+                    "" => true,
+                    FAVORITES => app.ui.library_favorites.contains(&entry.id),
+                    cat => entry.category == cat || entry.category.strip_prefix(cat).is_some_and(|rest| rest.starts_with('/')),
+                }
             }
         })
         .collect();
+
     visible.sort_by_cached_key(|entry| (tr(&entry.label).to_lowercase(), entry.id.as_str()));
     visible
 }

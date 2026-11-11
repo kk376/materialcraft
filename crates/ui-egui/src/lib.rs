@@ -9,6 +9,7 @@ pub mod explorer;
 pub mod export;
 pub mod fonts;
 pub mod function;
+pub mod fuzzy;
 pub mod graph;
 mod graph_drag_payload;
 mod history;
