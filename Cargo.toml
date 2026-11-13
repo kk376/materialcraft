@@ -83,6 +83,7 @@ roxmltree = "0.20"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 cap-std = "4"
 getrandom = "0.3"
+unicode-normalization = "0.1"
 # Shared Craft egui components (widget palette, icon buttons, panel docking): storytold/craft-libs,
 # MIT OR Apache-2.0, every craft-libs crate pinned to one rev.
 egui_kittest = "0.37"

@@ -253,7 +253,7 @@ pub(crate) fn visible<'a>(app: &MaterialCraftApp, entries: &'a [LibraryEntry], t
         .filter(|entry| app.ui.library_show_other || entry.canvas == LibraryCanvas::Any || entry.canvas == target.canvas)
         .filter(|entry| {
             if is_searching {
-                crate::fuzzy::fuzzy_score(&tr(&entry.label), search).is_some()
+                crate::fuzzy::fuzzy_score(tr(&entry.label), search).is_some()
                     || crate::fuzzy::fuzzy_score(&entry.id, search).is_some()
                     || crate::fuzzy::fuzzy_score(&entry.category, search).is_some()
             } else {

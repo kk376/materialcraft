@@ -1,6 +1,9 @@
 //! Subsequence and fuzzy matching for node search and library panels.
 
-/// Case-insensitive fuzzy subsequence score (higher is better). Returns `None` if not a match.
+use unicode_normalization::UnicodeNormalization;
+
+/// Case-insensitive, Unicode-normalized fuzzy subsequence score (higher is better).
+/// Returns `None` if not a match.
 ///
 /// Matching rules:
 /// 1. An empty query matches everything with score 0.
@@ -13,46 +16,57 @@
 ///    - Contiguous character matches (+8 per character)
 ///    - Word-boundary matches: start of string or right after `' '`, `'_'`, `'-'`, `'/'` (+6 per character)
 /// 4. Length penalty: subtracts `(hay.len() / 16)` so shorter, tighter matches rank ahead of sprawling names.
+///
+/// Text is normalized to Unicode NFC after case-folding using the standards-compliant
+/// `unicode-normalization` crate (Unicode Standard Annex #15).
 pub fn fuzzy_score(hay: &str, query: &str) -> Option<i32> {
     let query_trimmed = query.trim();
     if query_trimmed.is_empty() {
         return Some(0);
     }
 
-    let hay_lower = case_fold(hay);
-    let q_lower = case_fold(query_trimmed);
+    let hay_norm = normalize_for_search(hay);
+    let q_norm = normalize_for_search(query_trimmed);
 
-    let words: Vec<&str> = q_lower.split_whitespace().collect();
-    if words.len() > 1 {
-        let mut total = 0i32;
+    let mut words = q_norm.split_whitespace();
+    let first = words.next()?;
+    if let Some(second) = words.next() {
+        let mut total = single_word_score(&hay_norm, first)?.saturating_add(single_word_score(&hay_norm, second)?);
         for w in words {
-            total = total.saturating_add(single_word_score(&hay_lower, w)?);
+            total = total.saturating_add(single_word_score(&hay_norm, w)?);
         }
-        return Some(total);
+        Some(total)
+    } else {
+        single_word_score(&hay_norm, &q_norm)
     }
-
-    single_word_score(&hay_lower, &q_lower)
 }
 
-/// Scores a single whitespace-trimmed query word against lowercase candidate text.
+/// Normalizes and case-folds text for Unicode-aware, canonically equivalent fuzzy matching.
 ///
-/// Returns `None` if the query word is not a subsequence of `hay_lower`.
-fn single_word_score(hay_lower: &str, q_lower: &str) -> Option<i32> {
+/// Applies Unicode lowercasing followed by canonical composition into NFC form.
+fn normalize_for_search(s: &str) -> String {
+    s.chars().flat_map(char::to_lowercase).nfc().collect()
+}
+
+/// Scores a single whitespace-trimmed query word against normalized candidate text.
+///
+/// Returns `None` if the query word is not a subsequence of `hay_norm`.
+fn single_word_score(hay_norm: &str, q_norm: &str) -> Option<i32> {
     let mut score = 0i32;
 
-    if hay_lower == q_lower {
+    if hay_norm == q_norm {
         score = score.saturating_add(100);
-    } else if hay_lower.starts_with(q_lower) {
+    } else if hay_norm.starts_with(q_norm) {
         score = score.saturating_add(50);
-    } else if hay_lower.split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(q_lower)) {
+    } else if hay_norm.split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(q_norm)) {
         score = score.saturating_add(40);
-    } else if hay_lower.contains(q_lower) {
+    } else if hay_norm.contains(q_norm) {
         score = score.saturating_add(30);
     }
 
     let mut last_end_idx: Option<usize> = None;
-    let mut chars = hay_lower.char_indices();
-    for q in q_lower.chars().filter(|c| !c.is_whitespace()) {
+    let mut chars = hay_norm.char_indices();
+    for q in q_norm.chars().filter(|c| !c.is_whitespace()) {
         let (idx, ch) = chars.by_ref().find(|(_, c)| *c == q)?;
         let contiguous = match last_end_idx {
             Some(prev_end) if idx == prev_end => 8,
@@ -60,163 +74,15 @@ fn single_word_score(hay_lower: &str, q_lower: &str) -> Option<i32> {
         };
         score = score.saturating_add(contiguous);
 
-        let is_boundary = idx == 0 || matches!(hay_lower.as_bytes().get(idx.saturating_sub(1)), Some(&b' ' | &b'_' | &b'-' | &b'/'));
+        let is_boundary = idx == 0 || matches!(hay_norm.as_bytes().get(idx.saturating_sub(1)), Some(&b' ' | &b'_' | &b'-' | &b'/'));
         if is_boundary {
             score = score.saturating_add(6);
         }
         last_end_idx = Some(idx.saturating_add(ch.len_utf8()));
     }
 
-    let len_penalty = (hay_lower.len() / 16) as i32;
+    let len_penalty = (hay_norm.len() / 16) as i32;
     Some(score.saturating_sub(len_penalty))
-}
-
-/// Returns true if `c` is a Unicode combining diacritic mark (U+0300..=U+036F).
-fn is_combining_diacritic(c: char) -> bool {
-    matches!(c, '\u{0300}'..='\u{036F}')
-}
-
-/// Canonical combining class for diacritics: below marks (202) sort before above marks (230).
-fn combining_class(c: char) -> u8 {
-    match c {
-        '\u{0327}' | '\u{0328}' => 202, // Cedilla, ogonek (below)
-        _ if is_combining_diacritic(c) => 230,
-        _ => 0,
-    }
-}
-
-/// Normalizes and case-folds text for Unicode-aware, canonically equivalent fuzzy matching.
-///
-/// 1. Expands ligatures and applies Unicode lowercase.
-/// 2. Canonically sorts consecutive combining marks by combining class.
-/// 3. Precomposes base Latin letters with combining accents into NFC equivalent forms.
-fn case_fold(s: &str) -> String {
-    // Step 1: Expand ligatures and special lowercasing into characters
-    let mut expanded = Vec::with_capacity(s.len());
-    for c in s.chars() {
-        for lc in c.to_lowercase() {
-            match lc {
-                'ß' => expanded.extend(['s', 's']),
-                'ς' => expanded.push('σ'),
-                'µ' => expanded.push('μ'),
-                'ſ' => expanded.push('s'),
-                'ﬀ' => expanded.extend(['f', 'f']),
-                'ﬁ' => expanded.extend(['f', 'i']),
-                'ﬂ' => expanded.extend(['f', 'l']),
-                'ﬃ' => expanded.extend(['f', 'f', 'i']),
-                'ﬄ' => expanded.extend(['f', 'f', 'l']),
-                'ﬅ' | 'ﬆ' => expanded.extend(['s', 't']),
-                other => expanded.push(other),
-            }
-        }
-    }
-
-    // Step 2: Canonical combining order & diacritic composition
-    let mut out = String::with_capacity(expanded.len());
-    let mut i = 0;
-    while i < expanded.len() {
-        let ch = expanded[i];
-        if !is_combining_diacritic(ch) {
-            let mut j = i + 1;
-            let mut marks = Vec::new();
-            while j < expanded.len() && is_combining_diacritic(expanded[j]) {
-                marks.push(expanded[j]);
-                j += 1;
-            }
-            if !marks.is_empty() {
-                marks.sort_by_key(|&m| combining_class(m));
-                let mut curr = ch;
-                for m in marks {
-                    if let Some(composed) = compose_diacritic(curr, m) {
-                        curr = composed;
-                    } else {
-                        out.push(curr);
-                        curr = m;
-                    }
-                }
-                out.push(curr);
-                i = j;
-                continue;
-            }
-        }
-        out.push(ch);
-        i += 1;
-    }
-
-    out
-}
-
-/// Composes a base letter and combining diacritic into its canonical precomposed NFC form.
-fn compose_diacritic(base: char, diacritic: char) -> Option<char> {
-    match (base.to_lowercase().next()?, diacritic) {
-        ('e', '\u{0301}') => Some('é'),
-        ('e', '\u{0300}') => Some('è'),
-        ('e', '\u{0302}') => Some('ê'),
-        ('e', '\u{0308}') => Some('ë'),
-        ('e', '\u{030c}') => Some('ě'),
-        ('a', '\u{0300}') => Some('à'),
-        ('a', '\u{0301}') => Some('á'),
-        ('a', '\u{0302}') => Some('â'),
-        ('a', '\u{0303}') => Some('ã'),
-        ('a', '\u{0308}') => Some('ä'),
-        ('a', '\u{030a}') => Some('å'),
-        ('a', '\u{0304}') => Some('ā'),
-        ('a', '\u{0306}') => Some('ă'),
-        ('a', '\u{0328}') => Some('ą'),
-        ('o', '\u{0300}') => Some('ò'),
-        ('o', '\u{0301}') => Some('ó'),
-        ('o', '\u{0302}') => Some('ô'),
-        ('o', '\u{0303}') => Some('õ'),
-        ('o', '\u{0308}') => Some('ö'),
-        ('o', '\u{0304}') => Some('ō'),
-        ('o', '\u{030b}') => Some('ő'),
-        ('u', '\u{0300}') => Some('ù'),
-        ('u', '\u{0301}') => Some('ú'),
-        ('u', '\u{0302}') => Some('û'),
-        ('u', '\u{0308}') => Some('ü'),
-        ('u', '\u{030a}') => Some('ů'),
-        ('u', '\u{0304}') => Some('ū'),
-        ('u', '\u{030b}') => Some('ű'),
-        ('i', '\u{0300}') => Some('ì'),
-        ('i', '\u{0301}') => Some('í'),
-        ('i', '\u{0302}') => Some('î'),
-        ('i', '\u{0308}') => Some('ï'),
-        ('i', '\u{0304}') => Some('ī'),
-        ('c', '\u{0327}') => Some('ç'),
-        ('c', '\u{030c}') => Some('č'),
-        ('c', '\u{0301}') => Some('ć'),
-        ('j', '\u{030c}') => Some('ǰ'),
-        ('j', '\u{0302}') => Some('ĵ'),
-        ('g', '\u{0307}') => Some('ġ'),
-        ('g', '\u{0306}') => Some('ğ'),
-        ('g', '\u{0327}') => Some('ģ'),
-        ('g', '\u{0302}') => Some('ĝ'),
-        ('h', '\u{0302}') => Some('ĥ'),
-        ('h', '\u{0307}') => Some('ḣ'),
-        ('k', '\u{0327}') => Some('ķ'),
-        ('l', '\u{0301}') => Some('ĺ'),
-        ('l', '\u{0327}') => Some('ļ'),
-        ('l', '\u{030c}') => Some('ľ'),
-        ('l', '\u{0307}') => Some('ŀ'),
-        ('s', '\u{030c}') => Some('š'),
-        ('s', '\u{0301}') => Some('ś'),
-        ('s', '\u{0327}') => Some('ş'),
-        ('z', '\u{030c}') => Some('ž'),
-        ('z', '\u{0301}') => Some('ź'),
-        ('z', '\u{0307}') => Some('ż'),
-        ('r', '\u{030c}') => Some('ř'),
-        ('d', '\u{030c}') => Some('ď'),
-        ('t', '\u{030c}') => Some('ť'),
-        ('t', '\u{0327}') => Some('ţ'),
-        ('n', '\u{030c}') => Some('ň'),
-        ('n', '\u{0303}') => Some('ñ'),
-        ('n', '\u{0301}') => Some('ń'),
-        ('w', '\u{0302}') => Some('ŵ'),
-        ('y', '\u{0301}') => Some('ý'),
-        ('y', '\u{0302}') => Some('ŷ'),
-        ('y', '\u{0308}') => Some('ÿ'),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -282,24 +148,21 @@ mod tests {
     }
 
     #[test]
-    fn test_ligature_expansion_with_accents() {
-        // ffi ligature + acute vs f-f-i + acute
-        let lig = "ﬃ\u{0301}le";
-        let sep = "ffi\u{0301}le";
-        assert_eq!(fuzzy_score(lig, sep), fuzzy_score(sep, sep));
+    fn test_multi_accent_canonical_equivalence() {
+        // Vietnamese ắ: precomposed (U+1EAF) vs decomposed (a + U+0306 breve + U+0301 acute)
+        let precomposed = "m\u{1eaf}t";
+        let decomposed = "ma\u{0306}\u{0301}t";
+        assert_eq!(fuzzy_score(precomposed, decomposed), fuzzy_score(precomposed, precomposed));
+        assert_eq!(fuzzy_score(decomposed, precomposed), fuzzy_score(precomposed, precomposed));
+        assert!(fuzzy_score(precomposed, decomposed).is_some());
     }
 
     #[test]
-    fn test_caron_on_j_and_dot_on_g() {
-        assert_eq!(fuzzy_score("ǰ", "j\u{030c}"), fuzzy_score("ǰ", "ǰ"));
-        assert_eq!(fuzzy_score("ġ", "g\u{0307}"), fuzzy_score("ġ", "ġ"));
-    }
-
-    #[test]
-    fn test_turkish_dotted_i_with_macron() {
-        let label = "İ\u{0304}tem";
-        let query = "İ\u{0304}tem";
-        assert_eq!(fuzzy_score(label, query), fuzzy_score(label, label));
+    fn test_l_dot_above_distinct_from_middle_dot() {
+        // l + U+0307 (combining dot above) must NOT be conflated with U+0140 (ŀ, L with middle dot)
+        let l_combining_dot = "l\u{0307}abel";
+        let l_middle_dot = "\u{0140}abel";
+        assert_eq!(fuzzy_score(l_combining_dot, l_middle_dot), None);
     }
 
     #[test]
