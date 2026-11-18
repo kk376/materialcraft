@@ -19,6 +19,7 @@ fn no_pins() -> std::path::PathBuf {
 fn app() -> MaterialCraftApp {
     let mut app = MaterialCraftApp::headless(sample_session(), UiState::default());
     app.updates_rt.updater = Updater::new(&crate::UPDATE_APP, "0.1.0").with_pins_path(no_pins());
+
     app
 }
 
@@ -48,9 +49,26 @@ fn release() -> craft_update::Release {
     }
 }
 
+/// Offers `release()` and ticks until the prompt is open.
+/// A fresh updater declines an offer only when the pins file holds a launcher choice, which sets
+/// `managed()`. A tick asks for another frame while the offer waits for its thread, so the wait
+/// fails when a tick leaves the prompt closed and asks for no frame, instead of ticking forever.
+fn offer(updater: &mut Updater) {
+    updater.offer(release());
+    let ctx = egui::Context::default();
+
+    while !updater.prompt_open() {
+        assert!(updater.managed().is_none(), "the offer was declined: {} holds a launcher choice", no_pins().display());
+        let _ = ctx.run_logic(&egui::RawInput::default(), |ctx| updater.tick(ctx));
+        assert!(updater.prompt_open() || updater.managed().is_some() || ctx.has_requested_repaint(), "the offer ended without opening the prompt");
+        std::thread::yield_now();
+    }
+}
+
 pub(super) fn open_prompt(app: &mut MaterialCraftApp) {
     app.updates_rt.updater = Updater::new(&crate::UPDATE_APP, "0.1.0").with_pins_path(no_pins());
-    app.updates_rt.updater.offer(release());
+
+    offer(&mut app.updates_rt.updater);
 }
 
 #[test]
@@ -144,11 +162,15 @@ fn result_window_shows_every_status_but_idle() {
 #[test]
 fn an_offered_release_opens_the_prompt_over_the_window() {
     let mut app = app();
-    app.updates_rt.updater.offer(release());
+
+    offer(&mut app.updates_rt.updater);
+
     assert!(blocks_input(&app));
 
     let mut harness = egui_kittest::Harness::builder().build_ui_state(|ui, app: &mut MaterialCraftApp| crate::windows::show(app, ui.ctx()), app);
+
     harness.run_steps(3);
+
     let _ = harness.get_by_label("LATER");
     assert!(harness.state().updates_rt.updater.prompt_open());
 }
@@ -183,6 +205,7 @@ fn press_export(app: &mut MaterialCraftApp) {
         events: vec![egui::Event::Key { key: egui::Key::E, physical_key: None, pressed: true, repeat: false, modifiers }],
         ..Default::default()
     };
+
     let mut output = ctx.run_ui(input, |ui| menus::shortcuts(app, ui.ctx()));
     output.textures_delta.clear();
 }
@@ -200,11 +223,15 @@ fn the_prompt_and_the_modal_results_hold_the_keyboard() {
 #[test]
 fn shortcuts_wait_while_the_prompt_is_open() {
     let mut idle = app();
+
     press_export(&mut idle);
+
     assert!(idle.ui.windows.export, "the shortcut works without the prompt");
 
     let mut prompted = app();
-    prompted.updates_rt.updater.offer(release());
+    offer(&mut prompted.updates_rt.updater);
+
     press_export(&mut prompted);
+
     assert!(!prompted.ui.windows.export);
 }

@@ -30,6 +30,7 @@ fn limits() -> Limits {
 fn image_resolver() -> ImageResolver {
     let resolver = ImageResolver::new(Limits { tree_depth: MAX_TOTAL_DEPTH, depth: MAX_TOTAL_DEPTH, ..limits() });
     resolver.set_document_depth(MAX_TREE_DEPTH);
+
     resolver
 }
 
@@ -37,11 +38,12 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Image> {
     let limits = limits();
     let resolver = image_resolver();
     let options = usvg::Options { image_href_resolver: resolver.resolver(), ..usvg::Options::default() };
-    let svg = tree::text(bytes, &limits).map_err(svg_error)?;
-    resolver.check_document(&svg).map_err(svg_error)?;
-    let tree = tree::parse_text(&svg, &limits, &options).map_err(svg_error)?;
+
+    // Bitmap imports do not use the resolver's optional omission counts
+    let tree = tree::parse(bytes, &limits, &options).map_err(svg_error)?;
     let size = tree.size().to_int_size();
     let (width, height) = (size.width(), size.height());
+
     if width > MAX_SIDE || height > MAX_SIDE {
         return Err(FormatError::Image(format!("SVG exceeds {MAX_SIDE} pixels")));
     }
@@ -49,15 +51,18 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Image> {
     let pixels = draw::render(&tree, usvg::Transform::identity(), width, height, 0, DRAW_BUDGET)
         .map_err(|refusal| FormatError::Image(format!("SVG not drawn: {}", refusal.message)))?;
 
+    // Release geometry before allocating the float pixel plane
+    drop(tree);
+
+    // Reuse the transfer curve for every possible 8-bit channel value
+    const CHANNEL_VALUE_COUNT: usize = u8::MAX as usize + 1;
+    let linear_channels: [f32; CHANNEL_VALUE_COUNT] = std::array::from_fn(|value| srgb_to_linear(value as f32 / 255.0));
+    let linear_channel = |value: u8| linear_channels.get(usize::from(value)).copied().unwrap_or_default();
+
     Ok(Image::generate(width, height, Kind::Color, |x, y| {
         let pixel = pixels.pixel(x, y).map(|pixel| pixel.demultiply());
         pixel.map_or([0.0; 4], |pixel| {
-            [
-                srgb_to_linear(f32::from(pixel.red()) / 255.0),
-                srgb_to_linear(f32::from(pixel.green()) / 255.0),
-                srgb_to_linear(f32::from(pixel.blue()) / 255.0),
-                f32::from(pixel.alpha()) / 255.0,
-            ]
+            [linear_channel(pixel.red()), linear_channel(pixel.green()), linear_channel(pixel.blue()), f32::from(pixel.alpha()) / 255.0]
         })
     }))
 }
@@ -71,6 +76,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::decode;
+    use crate::FormatError;
 
     fn svg(body: &str) -> Vec<u8> {
         format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="2">{body}</svg>"#).into_bytes()
@@ -112,14 +118,32 @@ mod tests {
         assert!(decode(b"<svg").is_err());
     }
 
+    #[test]
+    fn entity_comment_marker_cannot_hide_later_expansion() {
+        // Keep the root inside the public decoder's SVG sniff window
+        const ENTITY_VALUE_BYTES: usize = 1024;
+
+        let large_value = "a".repeat(ENTITY_VALUE_BYTES);
+        let references = "&large;".repeat(craft_svg::guard::MAX_ENTITY_EXPANSION / ENTITY_VALUE_BYTES + 1);
+        let document = format!(
+            r#"<!DOCTYPE svg [<!ENTITY bait "<!--"><!ENTITY large "{large_value}">]><svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" id="{references}"/>"#
+        );
+
+        let result = crate::decode(document.as_bytes(), false);
+
+        assert!(matches!(result, Err(FormatError::Image(ref message)) if message.contains("entities expand to too much text")), "{result:?}");
+    }
+
     fn nested_groups(levels: usize, inner: &str) -> String {
         format!("{}{inner}{}", "<g>".repeat(levels), "</g>".repeat(levels))
     }
 
     fn embedded(levels: usize) -> Vec<u8> {
         use base64::Engine as _;
+
         let inner = svg(&nested_groups(levels, r##"<rect width="4" height="2" fill="#ff0000"/>"##));
         let data = base64::engine::general_purpose::STANDARD.encode(inner);
+
         svg(&nested_groups(30, &format!(r#"<image href="data:image/svg+xml;base64,{data}" width="4" height="2"/>"#)))
     }
 
@@ -142,6 +166,7 @@ mod tests {
     #[test]
     fn linked_files_are_not_read() {
         let linked = svg(r#"<image href="file:///etc/hostname" width="4" height="2"/>"#);
+
         let image = decode(&linked).unwrap();
 
         assert_eq!(image.get(0, 0, false)[3], 0.0);
@@ -150,8 +175,10 @@ mod tests {
     #[test]
     fn svgz_is_unpacked() {
         use std::io::Write;
+
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         gz.write_all(&svg(r#"<rect width="4" height="2" fill="blue"/>"#)).unwrap();
+
         let image = decode(&gz.finish().unwrap()).unwrap();
 
         assert!(image.get(1, 1, false)[2] > 0.9);

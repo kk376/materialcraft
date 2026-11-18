@@ -13,12 +13,11 @@ craft-mime = { workspace = true }
 craft-xml = { workspace = true }
 craft-mcmat = { workspace = true }
 materialcraft-core = { workspace = true }
-craft-texture = { workspace = true }
+craft-texture = { workspace = true, features = ["dds"] }
 materialcraft-geom = { workspace = true }
 materialcraft-nodes = { workspace = true }
 craft-mesh = { workspace = true }
 image = { workspace = true }
-craft-texture-dds = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
