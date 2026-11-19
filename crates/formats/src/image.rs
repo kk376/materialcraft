@@ -62,15 +62,19 @@ pub fn decode(bytes: &[u8], linear: bool) -> Result<Image> {
 /// Encode `image` as `ext` (see [`EXPORT_FORMATS`]). `srgb`: color values are written through the sRGB curve (base color); data maps (normal, roughness…) are written linear
 pub fn encode(image: &Image, ext: &str, depth: Depth, srgb: bool) -> Result<Vec<u8>> {
     let ext = ext.trim_start_matches('.').to_ascii_lowercase();
-    let encode_channel = |v: f32| if srgb && image.kind() == Kind::Color { linear_to_srgb(v) } else { v };
+    let encode_channel = |v: f32| if srgb { linear_to_srgb(v) } else { v };
     let (w, h) = (image.width(), image.height());
-    let color = image.kind() == Kind::Color;
+
+    // Store sRGB grayscale colors as RGB so readers apply the transfer
+    // Preserve single-channel storage for raw grayscale data
+    let source_color = image.kind() == Kind::Color;
+    let color = source_color || srgb;
     let pixel = |i: usize| -> [f32; 4] {
-        if color {
+        if source_color {
             let s = image.data().get(i * 4..i * 4 + 4).unwrap_or(&[0.0, 0.0, 0.0, 1.0]);
             [encode_channel(s[0]), encode_channel(s[1]), encode_channel(s[2]), s[3]]
         } else {
-            let v = image.data().get(i).copied().unwrap_or(0.0);
+            let v = encode_channel(image.data().get(i).copied().unwrap_or(0.0));
             [v, v, v, 1.0]
         }
     };
@@ -127,4 +131,29 @@ pub fn encode(image: &Image, ext: &str, depth: Depth, srgb: bool) -> Result<Vec<
     let mut output = Cursor::new(Vec::new());
     dynamic_image.write_to(&mut output, format).map_err(|e| FormatError::Image(e.to_string()))?;
     Ok(output.into_inner())
+}
+
+#[cfg(test)]
+mod transfer_tests {
+    use super::*;
+
+    #[test]
+    fn grayscale_png_round_trips_selected_transfer() {
+        let image = Image::filled(2, 2, Kind::Gray, [0.25; 4]);
+        for depth in [Depth::U8, Depth::U16] {
+            for srgb in [false, true] {
+                let bytes = encode(&image, "png", depth, srgb).unwrap();
+                let decoded = decode(&bytes, !srgb).unwrap();
+                assert_eq!(decoded.kind(), if srgb { Kind::Color } else { Kind::Gray });
+                assert!((decoded.data()[0] - 0.25).abs() < 0.003);
+                if !srgb {
+                    // Existing grayscale data imports stay linear even at the default setting
+                    assert!((decode(&bytes, false).unwrap().data()[0] - 0.25).abs() < 0.003);
+                }
+                let stored = decode(&bytes, true).unwrap();
+                let expected = if srgb { linear_to_srgb(0.25) } else { 0.25 };
+                assert!((stored.data()[0] - expected).abs() < 0.003);
+            }
+        }
+    }
 }

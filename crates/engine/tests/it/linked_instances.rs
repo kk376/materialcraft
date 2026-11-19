@@ -127,6 +127,31 @@ fn failed_edit_groups_do_not_publish_source_changes() {
 }
 
 #[test]
+fn save_all_includes_dependents_changed_by_the_pending_group() {
+    let directory = std::env::temp_dir().join(format!("materialcraft-save-all-linked-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let (source, value) = source();
+    let mut session = Session::new(source);
+    execute(&mut session, "file.save", &json!({"path": directory.join("source.sbs")})).unwrap();
+    execute(&mut session, "file.newPackage", &json!({"name": "Target"})).unwrap();
+    execute(&mut session, "file.new", &json!({"name": "Target", "template": "empty"})).unwrap();
+    execute(&mut session, "graph.instance.add", &json!({"document": 0, "graph": "Source"})).unwrap();
+    execute(&mut session, "file.save", &json!({"path": directory.join("target.sbs")})).unwrap();
+    execute(&mut session, "package.activate", &json!({"document": 0})).unwrap();
+    session.begin_group("Pending source edit");
+    execute(&mut session, "graph.node.param", &json!({"id": value.0, "param": "color", "value": [1.0, 0.0, 0.0, 1.0]})).unwrap();
+    assert_eq!(session.open_packages().iter().filter(|entry| entry.3).count(), 1);
+
+    let result = execute(&mut session, "file.saveAll", &json!({})).unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+
+    assert_eq!(result["failed"], json!([]));
+    assert_eq!(result["saved"].as_array().unwrap().len(), 2);
+    assert!(session.open_packages().iter().all(|entry| !entry.3));
+    assert_eq!(session.document_id, 0);
+}
+
+#[test]
 fn instance_info_is_read_only_and_describes_the_source_reference() {
     let (source, _) = source();
     let mut session = Session::new(source);

@@ -144,7 +144,7 @@ impl Session {
         self.next_document_id = id.checked_add(1).ok_or_else(|| bad("file.open", "document identifiers exhausted"))?;
         self.linked_sources.extend(package.dependencies.clone());
         let had_document = self.document_open;
-        let mut document = OpenDocument::new(id, package, path, self.default_view3d.clone().unwrap_or_default());
+        let mut document = OpenDocument::new(id, package, path, self.default_view3d.clone().unwrap_or_default(), self.view_outputs_on_open);
         document.exchange(self);
         self.document_open = true;
         if had_document {

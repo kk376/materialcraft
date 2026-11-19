@@ -120,7 +120,7 @@ pub(super) fn handle(
             Some(FunctionDrag::Wire(from)) => match pointer.map(|pointer| (pointer, near(pointer))) {
                 Some((_, Some((to, Some(input))))) if from != to => editor.edit(app, FunctionEdit::Connect { from, to, input }, false),
                 // Dropped on empty canvas: search for a node that takes the wire
-                Some((pointer, None)) if canvas_bounds.contains(pointer) => {
+                Some((pointer, None)) if canvas_bounds.contains(pointer) && app.ui.prefs.wire_drop_opens_node_search => {
                     editor.search = Some(FunctionSearch::at(camera.to_graph(pointer), Some(SearchWire::From(from))));
                 }
                 _ => {}
@@ -128,7 +128,7 @@ pub(super) fn handle(
             Some(FunctionDrag::InputWire(to, input)) => match pointer.map(|pointer| (pointer, near(pointer))) {
                 Some((_, Some((from, None)))) if from != to => editor.edit(app, FunctionEdit::Connect { from, to, input }, false),
                 // Dropped on empty canvas: search for a node whose output feeds the input
-                Some((pointer, None)) if canvas_bounds.contains(pointer) => {
+                Some((pointer, None)) if canvas_bounds.contains(pointer) && app.ui.prefs.wire_drop_opens_node_search => {
                     editor.search = Some(FunctionSearch::at(camera.to_graph(pointer), Some(SearchWire::To(to, input))));
                 }
                 _ => {}
@@ -186,10 +186,14 @@ pub(super) fn handle(
     {
         editor.menu_at = camera.to_graph(pointer_position);
     }
+
     // Space or Tab over the canvas, or a double-click on empty canvas, searches for a node to add
     // Tab moves focus between widgets, so it waits only for text fields and focus held before this frame
     let space = !ui.ctx().egui_wants_keyboard_input() && ui.input(|input| input.key_pressed(egui::Key::Space));
-    let tab = !app.graph.keyboard_was_focused && !ui.ctx().text_edit_focused() && ui.input(|input| input.key_pressed(egui::Key::Tab));
+    let tab = app.ui.prefs.tab_opens_node_search
+        && !app.graph.keyboard_was_focused
+        && !ui.ctx().text_edit_focused()
+        && ui.input(|input| input.key_pressed(egui::Key::Tab));
     let keys = space || tab;
     let on_node = pointer.is_some_and(|pointer| geometry.rects.iter().any(|(_, bounds)| bounds.contains(pointer)));
     let double_click = response.double_clicked() && !on_wire && !on_annotation && !on_node && pointer.and_then(near).is_none();

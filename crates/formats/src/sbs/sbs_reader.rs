@@ -3,10 +3,12 @@ use super::component_usage;
 use super::connection::connect_all;
 use super::constant::{MAX_NODES, MAX_WIRES};
 use super::constant::{NODE_HALF_SIZE, SELF_DEPENDENCY};
-use super::embedded::decode_embedded;
+use super::embedded::{decode_embedded, decode_embedded_bounded};
+use super::embedded_error::EmbeddedError;
 use super::filter_map::{BASE_PARAMS, FilterMap, HANDLED_PARAMS, filter_by_sbs_name};
 use super::function_graph;
 use super::input_bridge::InputBridge;
+use super::instance_interface::MAX_INPUTS;
 use super::placeholder::{add_placeholder_input, fill_placeholder, placeholder_outputs};
 use super::read_node::ReadNode;
 use super::sbs_value::{SbsValue, exposed_default, sbs_constant, to_natural_value, to_param_value};
@@ -22,6 +24,8 @@ use roxmltree::Node as XmlNode;
 use std::collections::{HashMap, HashSet};
 
 pub(super) struct SbsReader<'text, 'warnings> {
+    pub(super) inflation_work: std::cell::Cell<u64>,
+    pub(super) resource_budget: Option<&'warnings std::cell::Cell<u64>>,
     pub(super) text: &'text str,
     pub(super) warnings: &'warnings mut Warnings,
     pub(super) dependencies: HashMap<String, String>,
@@ -108,9 +112,25 @@ impl<'text> SbsReader<'text, '_> {
         let mut why_missing = String::new();
 
         if let Some(embedded) = source.and_then(|s| child_element(s, "binembedded")) {
-            match decode_embedded(child_value(embedded, "strdata").unwrap_or("")) {
-                Ok(data) if !font || !data.is_empty() => bytes = Some(data),
+            let encoded = child_value(embedded, "strdata").unwrap_or("");
+            let decoded = match self.resource_budget {
+                Some(budget) => decode_embedded_bounded(encoded, budget.get(), &self.inflation_work),
+                None => decode_embedded(encoded).map_err(EmbeddedError::Damaged),
+            };
+            match decoded {
+                Ok(data) if !font || !data.is_empty() => {
+                    if let Some(budget) = self.resource_budget {
+                        // The decoder checked the retained length
+                        budget.set(budget.get().saturating_sub(data.len() as u64));
+                    }
+                    bytes = Some(data);
+                }
                 Ok(_) => why_missing = "its embedded font data is empty".into(),
+                Err(error @ (EmbeddedError::Budget | EmbeddedError::WorkBudget)) => {
+                    // Reject a budget error to preserve inline asset precedence
+                    self.warnings.add(format!("resource `{path}`: {error}"));
+                    return unique_name(&mut self.used_resource_names, if identifier.is_empty() { "resource" } else { identifier });
+                }
                 Err(e) => why_missing = format!("its embedded data is damaged ({e})"),
             }
         }
@@ -135,7 +155,7 @@ impl<'text> SbsReader<'text, '_> {
             }
         }
 
-        // A supplied font, including cour.ttf or embedded data, always wins. Only absence uses the shared fallback
+        // Prefer supplied font bytes before trying the shared fallback
         if font && bytes.is_none() {
             if let Some(name) = super::resource_replacement::load_font(self, pkg, identifier, path, linked) {
                 return name;
@@ -262,6 +282,9 @@ impl<'text> SbsReader<'text, '_> {
 
             self.node_count += 1;
             let mut node = self.read_node(&mut graph, *comp_node, &image_inputs, &outputs);
+            if let Some(document_node) = graph.nodes.get_mut(node.index) {
+                document_node.disabled = child_value(*comp_node, "materialcraftDisabled") == Some("1");
+            }
             for input in child_element(*comp_node, "inputValues").into_iter().flat_map(|inputs| children_named(inputs, "compInputValue")).take(64) {
                 let identifier = child_value(input, "identifier").unwrap_or("");
                 let value_type = child_value(input, "type").and_then(|code| code.parse().ok()).and_then(materialcraft_core::ValueType::from_code);
@@ -339,9 +362,15 @@ impl<'text> SbsReader<'text, '_> {
                 step: None,
             };
             super::parameter_widget::read(input, &mut exposed);
+            if let Some(current) =
+                child_element(input, "materialcraftValue").and_then(sbs_constant).and_then(|raw| to_param_value(&exposed.default, &raw, exposed.options.len()))
+            {
+                graph.inputs.insert(exposed.id.clone(), current);
+            }
             graph.exposed.push(exposed);
         }
 
+        super::presets::read(element, graph);
         image_inputs
     }
 
@@ -374,6 +403,13 @@ impl<'text> SbsReader<'text, '_> {
                         if let Some(node) = graph.nodes.get_mut(to.index) {
                             if let Some(instance) = &mut node.instance {
                                 if !instance.inputs.iter().any(|port| port.identifier == sbs_input) {
+                                    if instance.inputs.len() >= MAX_INPUTS || sbs_input.is_empty() {
+                                        self.warnings.add(format!(
+                                            "graph `{name}`: invalid input `{sbs_input}` or instance at its {MAX_INPUTS}-input limit; wire was dropped"
+                                        ));
+                                        continue;
+                                    }
+
                                     instance.inputs.push(materialcraft_core::GraphPort { identifier: sbs_input.into(), type_code: 1 });
                                 }
                             } else {
@@ -556,9 +592,19 @@ impl<'text> SbsReader<'text, '_> {
         if own_graph.is_some() || external.is_some() {
             let (id, index, node) = push_node(graph, "graph_instance", pos);
             if let Some(node) = node {
-                if let Some(sub_graph) = own_graph {
-                    node.params.insert("graph".into(), Value::Text(sub_graph));
-                } else {
+                let interface = super::instance_interface::read(implementation);
+                let has_interface = interface.is_some();
+                let inputs = match interface.transpose() {
+                    Ok(inputs) => inputs.unwrap_or_default(),
+                    Err(error) => {
+                        self.warnings.add(error);
+                        Vec::new()
+                    }
+                };
+                if let Some(sub_graph) = &own_graph {
+                    node.params.insert("graph".into(), Value::Text(sub_graph.clone()));
+                }
+                if own_graph.is_none() || has_interface {
                     let comp_node = implementation.parent().and_then(|parent| parent.parent());
                     let types: HashMap<_, _> = comp_node
                         .and_then(|node| child_element(node, "compOutputs"))
@@ -573,7 +619,7 @@ impl<'text> SbsReader<'text, '_> {
                         defaults: Default::default(),
                         package: external.unwrap_or("").into(),
                         graph: path.clone(),
-                        inputs: Vec::new(),
+                        inputs,
                         outputs: bridgings
                             .iter()
                             .map(|(uid, identifier)| materialcraft_core::GraphPort {

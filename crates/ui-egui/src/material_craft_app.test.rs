@@ -5,6 +5,26 @@ mod lib_tests {
     use materialcraft_engine::sample_session;
     use serde_json::json;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn autosave_leaves_one_snapshot_worker_in_flight() {
+        let mut app = MaterialCraftApp::headless(sample_session(), UiState::default());
+        app.session.modified = true;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || receiver.recv().unwrap());
+        let initial_worker = worker.thread().id();
+        app.autosave_worker = Some(worker);
+
+        for interval in 1..=3 {
+            let now = app.next_autosave + f64::from(interval) * 600.0;
+            app.autosave(now);
+            assert_eq!(app.autosave_worker.as_ref().unwrap().thread().id(), initial_worker);
+        }
+
+        sender.send(()).unwrap();
+        app.autosave_worker.take().unwrap().join().unwrap();
+    }
+
     #[test]
     fn copy_and_cut_fill_the_system_clipboard_in_material_and_function_canvases() {
         use crate::function::{FunctionEditor, FunctionTarget};

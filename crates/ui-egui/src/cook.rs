@@ -61,11 +61,51 @@ pub struct Cooker {
     pub started: Option<f64>,
     /// `Session::cook_epoch` when the running cook started
     epoch: u64,
+    /// Tools ▸ Suspend engine: nothing cooks until it is resumed
+    pub suspended: bool,
+    /// Tools ▸ Cancel rendering stopped the running cook: it does not start again until the next edit
+    stopped_by_user: bool,
+    /// The retained preview cannot supply parameter values at this epoch
+    cancelled_preview_epoch: Option<u64>,
 }
 
 impl Cooker {
     pub fn busy(&self) -> bool {
         self.rx.is_some()
+    }
+
+    /// Ask the running cook to stop between nodes
+    fn stop(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(flag) = &self.cancel {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+pub(crate) fn preview_ready(app: &MaterialCraftApp) -> bool {
+    !app.session.dirty && !app.cooker.busy() && app.cooker.cancelled_preview_epoch != Some(app.session.cook_epoch)
+}
+
+/// Tools ▸ Cancel rendering: stop the running cook; the next edit cooks again
+pub fn cancel(app: &mut MaterialCraftApp) {
+    if !app.cooker.busy() {
+        return;
+    }
+
+    app.cooker.stop();
+    app.cooker.stopped_by_user = true;
+    app.cooker.cancelled_preview_epoch = Some(app.session.cook_epoch);
+    app.session.dirty = false;
+}
+
+/// Tools ▸ Suspend engine: stop cooking until it is chosen again, then cook what changed meanwhile
+pub fn toggle_suspended(app: &mut MaterialCraftApp) {
+    app.cooker.suspended = !app.cooker.suspended;
+    if app.cooker.suspended {
+        app.cooker.stop();
+    } else {
+        app.session.dirty = true;
     }
 }
 
@@ -74,6 +114,7 @@ pub fn drive(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     if let Some(rx) = &app.cooker.rx {
         match rx.try_recv() {
             Ok(result) => {
+                let stopped_by_user = std::mem::take(&mut app.cooker.stopped_by_user);
                 app.cooker.rx = None;
                 app.cooker.started = None;
                 #[cfg(not(target_arch = "wasm32"))]
@@ -81,29 +122,28 @@ pub fn drive(app: &mut MaterialCraftApp, ctx: &egui::Context) {
                     app.cooker.cancel = None;
                 }
                 match result {
-                    // A stopped cook is partial: keep the previous results and cook again
+                    _ if stopped_by_user => {}
+
+                    // Partial results are discarded so the previous preview stays visible
                     Ok(c) if c.cancelled() => {
                         if app.cooker.epoch == app.session.cook_epoch {
                             app.session.dirty = true;
                         }
                     }
                     Ok(c) => {
-                        if !app.session.dirty && app.cooker.epoch == app.session.cook_epoch {
+                        if !app.cooker.suspended && !app.session.dirty && app.cooker.epoch == app.session.cook_epoch && c.graph == app.session.graph {
                             app.session.accept_preview(c);
+                            app.cooker.cancelled_preview_epoch = None;
                         }
                     }
-                    Err(msg) if !app.session.dirty && app.cooker.epoch == app.session.cook_epoch => report_failure(app, msg),
+                    Err(msg) if !app.cooker.suspended && !app.session.dirty && app.cooker.epoch == app.session.cook_epoch => report_failure(app, msg),
                     Err(_) => {}
                 }
                 ctx.request_repaint();
             }
             Err(TryRecvError::Empty) if app.session.dirty => {
-                // Stop between nodes, but wait for this worker to finish before starting
-                // another. A slow node must not accumulate workers during rapid edits
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(flag) = &app.cooker.cancel {
-                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
+                // Stop between nodes and wait for this worker: rapid edits must not pile up workers
+                app.cooker.stop();
                 ctx.request_repaint_after(std::time::Duration::from_millis(16));
                 return;
             }
@@ -112,9 +152,10 @@ pub fn drive(app: &mut MaterialCraftApp, ctx: &egui::Context) {
                 return;
             }
             Err(TryRecvError::Disconnected) => {
+                let stopped_by_user = std::mem::take(&mut app.cooker.stopped_by_user);
                 app.cooker.rx = None;
                 app.cooker.started = None;
-                if !app.session.dirty && app.cooker.epoch == app.session.cook_epoch {
+                if !stopped_by_user && !app.cooker.suspended && !app.session.dirty && app.cooker.epoch == app.session.cook_epoch {
                     report_failure(app, "the cook worker stopped unexpectedly".into());
                 }
                 #[cfg(not(target_arch = "wasm32"))]
@@ -124,7 +165,8 @@ pub fn drive(app: &mut MaterialCraftApp, ctx: &egui::Context) {
             }
         }
     }
-    if app.session.dirty {
+
+    if app.session.dirty && !app.cooker.suspended {
         start(app, ctx.input(|i| i.time));
         ctx.request_repaint();
     }

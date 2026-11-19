@@ -68,6 +68,8 @@ pub struct Session {
     pub view3d: View3d,
     /// The 3D view a reset goes back to, when the user saved one as the default
     pub default_view3d: Option<View3d>,
+    /// Opening a material graph shows its outputs in the 3D view (Preferences ▸ Graph)
+    pub view_outputs_on_open: bool,
     pub material_preview: crate::MaterialPreview,
     pub(crate) cooked_graph: Option<usize>,
     pub(crate) material_cooked: std::collections::BTreeMap<usize, Cooked>,
@@ -143,6 +145,7 @@ impl Session {
             view2d: View2d::default(),
             view3d: View3d::default(),
             default_view3d: None,
+            view_outputs_on_open: true,
             preview_size: Some(512),
             camera: CameraPrefs::default(),
             history_prefs: crate::HistoryPrefs::default(),

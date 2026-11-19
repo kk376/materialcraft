@@ -35,7 +35,7 @@ fn selection_names_the_checked_outputs_and_their_color_spaces() {
 
     let (outputs, color_spaces) = settings.selection(graph).unwrap();
     assert_eq!(outputs, Value::Null, "with every output checked, file.export writes them all");
-    assert_eq!(color_spaces, json!({"base_color": "srgb", "height": "raw"}), "unpicked outputs follow their usage");
+    assert_eq!(color_spaces, json!({}), "unpicked outputs follow the encoder's defaults");
 
     settings.skipped_outputs.insert(output_key("New_graph", "height"));
     settings.color_spaces.insert(output_key("New_graph", "base_color"), materialcraft_engine::ColorSpace::Linear);
@@ -91,15 +91,9 @@ fn unwired_options_say_they_are_not_available_yet() {
     let directory = temp("unwired");
     let planned = ExportSettings { destination: directory.display().to_string(), format: "dds".into(), ..ExportSettings::default() };
 
-    for (tab, settings) in [(ExportTab::MaterialX, ExportSettings::default()), (ExportTab::Mcmat, ExportSettings::default()), (ExportTab::FromGraph, planned)] {
-        app.ui.export_tab = tab;
-        let toasts = app.toasts.len();
-
-        assert!(!export(&mut app, &settings), "{tab:?} keeps the window open");
-
-        let toast = app.toasts.get(toasts).map(|toast| toast.text.clone()).unwrap_or_default();
-        assert!(toast.contains("isn't available yet"), "{tab:?}: {toast}");
-    }
+    app.ui.export_tab = ExportTab::FromGraph;
+    assert!(!export(&mut app, &planned));
+    assert!(app.toasts.last().unwrap().text.contains("isn't available yet"));
     assert!(!directory.exists(), "nothing is written");
 }
 
@@ -110,4 +104,84 @@ fn the_format_list_drops_tiff_and_lists_dds_as_planned() {
     assert!(formats.iter().all(|format| format.extension != "tif" && format.extension != "psd"));
     assert_eq!(ExportFormat::find("dds").map(|format| format.available), Some(false));
     assert_eq!(ExportFormat::find("png").map(ExportFormat::title).as_deref(), Some("PNG (*.png)"));
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn material_dialog_rejects_another_package_with_the_same_graph_path() {
+    for tab in [ExportTab::Mcmat, ExportTab::MaterialX] {
+        let mut app = app();
+        open(&mut app, tab);
+        let draft = app.ui.export_draft.clone().unwrap();
+        let original = app.session.document_id;
+        app.run("file.newPackage", json!({})).unwrap();
+        app.run("file.new", json!({"name": draft.material.root, "template": "empty"})).unwrap();
+        assert!(app.session.pkg.graph_by_name(&draft.material.root).is_some());
+        assert!(!publish(&mut app, &draft));
+        assert!(app.toasts.last().unwrap().text.contains("export package changed"));
+        assert!(app.material_export_job.is_none());
+
+        // Switching back preserves the original dialog and reaches destination validation
+        app.run("package.activate", json!({"document": original})).unwrap();
+        assert!(!publish(&mut app, &draft));
+        assert!(app.toasts.last().unwrap().text.contains("export destination"));
+    }
+}
+
+#[test]
+fn material_dialog_does_not_restore_a_closed_package_identity() {
+    let mut app = app();
+    open(&mut app, ExportTab::Mcmat);
+    let draft = app.ui.export_draft.clone().unwrap();
+    app.run("package.closeAll", json!({"discard": true})).unwrap();
+    assert!(!publish(&mut app, &draft));
+    assert!(app.toasts.last().unwrap().text.contains("export package changed"));
+    app.run("file.new", json!({"name": draft.material.root, "template": "empty"})).unwrap();
+    app.toasts.clear();
+    assert!(!publish(&mut app, &draft));
+    assert!(app.toasts.last().unwrap().text.contains("export package changed"));
+    open(&mut app, ExportTab::Mcmat);
+    let reopened = app.ui.export_draft.as_ref().unwrap();
+    assert_eq!(reopened.material.document, Some(app.session.document_id));
+    assert_ne!(reopened.material.document, draft.material.document);
+}
+
+#[test]
+fn material_dialog_identity_is_not_saved_in_preferences() {
+    let mut app = app();
+    open(&mut app, ExportTab::Mcmat);
+    let draft = app.ui.export_draft.as_ref().unwrap();
+    let stored = serde_json::to_value(draft).unwrap();
+    assert!(stored["material"].get("document").is_none());
+    let restored: ExportSettings = serde_json::from_value(stored).unwrap();
+    assert_eq!(restored.material.document, None);
+}
+
+#[test]
+fn folder_graphs_keep_independent_output_selection_and_color_spaces() {
+    let app = app();
+    let mut indoor = app.session.graph().unwrap().clone();
+    indoor.name = "Oak".into();
+    indoor.folder = "Indoor".into();
+    let mut outdoor = indoor.clone();
+    outdoor.folder = "Outdoor".into();
+    let mut settings = ExportSettings::default();
+
+    settings.include_all(&indoor, false);
+    assert!(settings.selection(&indoor).is_none());
+    assert_eq!(settings.selection(&outdoor).unwrap(), (Value::Null, json!({})));
+
+    settings.include_all(&indoor, true);
+    settings.color_spaces.insert(output_key(&indoor.sbs_path(), "base_color"), materialcraft_engine::ColorSpace::Linear);
+
+    assert_eq!(settings.selection(&indoor).unwrap(), (Value::Null, json!({"base_color":"linear"})));
+    assert_eq!(settings.selection(&outdoor).unwrap(), (Value::Null, json!({})));
+}
+
+#[test]
+fn material_export_reports_missing_shader_connections_on_every_platform() {
+    assert_eq!(material_export_message(&Value::Null), tr("Material exported"));
+    let message = material_export_message(&json!({"unmapped":["custom_output"]}));
+    assert!(message.contains(tr("Exported without shader connections")));
+    assert!(message.contains("custom_output"));
 }

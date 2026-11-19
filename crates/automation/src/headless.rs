@@ -110,6 +110,11 @@ impl Headless {
 
     /// Run an engine command. Untrusted callers can't reach host paths through it
     pub fn command_run(&mut self, id: &str, params: Value) -> Result<Value, AutomationError> {
+        if id == "material.cook" {
+            return Ok(materialcraft_engine::material_bake::cook(&self.session, &params, |path| {
+                self.read(path).map_err(|e| materialcraft_engine::EngineError::Other(e.to_string()))
+            })?);
+        }
         if !self.trusted() {
             authorize_command(id, &params)?;
         }
@@ -131,34 +136,34 @@ impl Headless {
 
     /// Open an `.sbs` or `.mcraft` package (or a `.mcmat` material's source), using the granted file access
     pub fn open(&mut self, path: &str) -> Result<Value, AutomationError> {
+        self.load(path)?;
+        Ok(self.inspect())
+    }
+
+    /// Open the document without generating preview images when a caller only needs its interface.
+    pub fn load(&mut self, path: &str) -> Result<(), AutomationError> {
         let bytes = self.read(path)?;
 
         // Workspace save paths stay relative to their granted roots
         let document = self.session.open_packages().into_iter().find(|entry| entry.2 == Some(path)).map(|entry| entry.0);
         if let Some(document) = document {
             self.session.activate_document(document)?;
-            return Ok(self.inspect());
+            return Ok(());
         }
 
-        let folder = path.replace('\\', "/").rsplit_once('/').map(|(folder, _)| format!("{folder}/")).unwrap_or_default();
-        let fs = &self.fs;
-        let linked = |relative: &str| -> Option<Vec<u8>> {
-            let relative = relative.trim().replace('\\', "/");
-            let plain = !relative.is_empty() && !relative.contains(':') && !relative.starts_with('/');
-            let inside = relative.split('/').all(|part| !part.is_empty() && part != "." && part != "..");
-            if !plain || !inside {
-                return None;
+        match &self.fs {
+            Filesystem::TrustedLocal => file_cmds::open_bytes_linked(&mut self.session, &bytes, Some(path.into()), &file_cmds::linked_files(path))?,
+            Filesystem::Workspace(workspace) => {
+                let document = workspace.document_path(path)?;
+                file_cmds::open_bytes_scoped(&mut self.session, &bytes, &document.to_string_lossy(), &|file| workspace.read_dependency(file))?;
             }
-
-            read_file(fs, &format!("{folder}{relative}")).ok()
-        };
-
-        file_cmds::open_bytes_linked(&mut self.session, &bytes, Some(path.to_string()), &linked)?;
+            Filesystem::Denied => return Err(bad("file access is not granted")),
+        }
         if self.session.path.is_some() {
             self.session.path = Some(path.to_string());
         }
 
-        Ok(self.inspect())
+        Ok(())
     }
 
     /// Save SBS with adjacent resources, or an independent MaterialCraft archive.
@@ -168,24 +173,32 @@ impl Headless {
             None => self.session.path.clone().ok_or_else(|| bad("the package has no file yet (new, or opened from another program): give a `path`"))?,
         };
 
-        let files = file_cmds::save_files_at(&self.session, &path)?;
+        let (destination, workspace_write) = match &self.fs {
+            Filesystem::Workspace(workspace) => {
+                let (destination, writer, save_path) = workspace.save_destination(&path)?;
+                (destination.to_string_lossy().into_owned(), Some((writer, save_path)))
+            }
+            Filesystem::TrustedLocal => (path.clone(), None),
+            Filesystem::Denied => return Err(bad("file access is not granted")),
+        };
+        let files = file_cmds::save_files_at(&self.session, &destination)?;
         let bytes = if file_cmds::is_mcraft(&path) {
             let bytes = files.zip().map_err(|error| bad(error.to_string()))?;
-            self.write(&path, &bytes)?;
+            if let Some((writer, save_path)) = &workspace_write {
+                writer.write(save_path, &bytes)?;
+            } else {
+                self.write(&path, &bytes)?;
+            }
             bytes.len()
         } else {
-            match &self.fs {
-                Filesystem::Denied => return Err(bad("file access is not granted")),
-                Filesystem::TrustedLocal => {
-                    materialcraft_engine::formats::project::write_files(Path::new(&path), &files).map_err(|error| bad(error.to_string()))?
-                }
-                Filesystem::Workspace(workspace) => {
-                    workspace.check_write(&path)?;
-                    let parent = path.rsplit_once('/').map_or(String::new(), |(parent, _)| format!("{parent}/"));
+            match &workspace_write {
+                None => materialcraft_engine::formats::project::write_files(Path::new(&path), &files).map_err(|error| bad(error.to_string()))?,
+                Some((writer, save_path)) => {
+                    let parent = save_path.rsplit_once('/').map_or(String::new(), |(parent, _)| format!("{parent}/"));
                     for name in files.files.keys().filter(|name| *name != &files.entry) {
-                        workspace.check_write(&format!("{parent}{name}"))?;
+                        writer.check_write(&format!("{parent}{name}"))?;
                     }
-                    workspace.create_dir_all(&format!("{parent}resources"))?;
+                    writer.create_dir_all(&format!("{parent}resources"))?;
                     for (name, bytes) in &files.files {
                         if name == &files.entry {
                             continue;
@@ -193,11 +206,11 @@ impl Headless {
 
                         let target = format!("{parent}{name}");
                         if let Some((directory, _)) = target.rsplit_once('/') {
-                            workspace.create_dir_all(directory)?;
+                            writer.create_dir_all(directory)?;
                         }
-                        workspace.write_resource(&target, bytes.as_slice())?;
+                        writer.write_resource(&target, bytes.as_slice())?;
                     }
-                    workspace.write(&path, files.xml().map_err(|error| bad(error.to_string()))?)?;
+                    writer.write(save_path, files.xml().map_err(|error| bad(error.to_string()))?)?;
                 }
             }
             files.xml().map_err(|error| bad(error.to_string()))?.len()
@@ -218,8 +231,9 @@ impl Headless {
     /// Export every output of a graph into folder `dir`
     pub fn export(&mut self, p: &Value) -> Result<Value, AutomationError> {
         let dir = p.get("dir").and_then(Value::as_str).ok_or_else(|| bad("`dir` is required"))?;
-        let request = materialcraft_engine::ExportRequest::from_params(&self.session, p)?;
-        let files = file_cmds::export_outputs(&self.session, &request)?;
+        let (files, mut report) = materialcraft_engine::material_bake::export(&self.session, p, |path| {
+            self.read(path).map_err(|e| materialcraft_engine::EngineError::Other(e.to_string()))
+        })?;
         self.create_dir_all(dir)?;
 
         let mut written = Vec::new();
@@ -228,7 +242,8 @@ impl Headless {
             self.write(&path, &exported.bytes)?;
             written.push(path);
         }
-        Ok(json!({"files": written}))
+        report["files"] = json!(written);
+        Ok(report)
     }
 
     /// Export a portable material below the granted write root
@@ -241,10 +256,14 @@ impl Headless {
             Filesystem::TrustedLocal => {}
         }
 
-        let (gi, options) = material_cmds::material_request(&self.session, "material.export", p)?;
-        let bytes = material_cmds::material_bytes(&self.session, gi, &options)?;
+        let gi = material_cmds::publish_graph(&self.session, p)?;
+        let bytes = if self.trusted() {
+            material_cmds::material_bytes(&self.session, gi)?
+        } else {
+            material_cmds::material_bytes_with_resource_limit(&self.session, gi, MAX_EXPORTED_MATERIAL_BYTES)?
+        };
         if bytes.len() as u64 > MAX_EXPORTED_MATERIAL_BYTES {
-            return Err(bad(format!("the material is {} bytes (limit {MAX_EXPORTED_MATERIAL_BYTES}); export a smaller `size`", bytes.len())));
+            return Err(bad(format!("the material is {} bytes (limit {MAX_EXPORTED_MATERIAL_BYTES}); reduce source asset sizes", bytes.len())));
         }
 
         self.write(&path, &bytes)?;

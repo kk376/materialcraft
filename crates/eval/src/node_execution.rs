@@ -32,6 +32,7 @@ pub(crate) fn cook_node(
     cooked: &Cooked,
     graph_variables: &BTreeMap<String, Value>,
     options: &Options,
+    input_image: Option<&Image>,
     cache: &Mutex<Cache>,
 ) -> NodeResult {
     let (input_ports, output_ports) = prepared.ports(node.id);
@@ -129,8 +130,6 @@ pub(crate) fn cook_node(
 
     let tile = base.tiling[0] && base.tiling[1];
 
-    // Input nodes read the caller's image for their identifier
-    let input_image = node.def.starts_with("input_").then(|| options.inputs.get(&identifier(node))).flatten();
     let resource_hash = match parameters.get("resource") {
         Some(Value::Text(name)) => package.resource(name).map_or(0, |r| r.bytes.content_hash()),
         _ => 0,

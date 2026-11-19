@@ -35,11 +35,29 @@ pub struct UiState {
     pub new_graph_template: String,
     pub new_graph_name: String,
     pub new_graph_size: u32,
+    pub new_graph_height: u32,
+    /// The width and height of a new graph change together
+    pub new_graph_linked: bool,
+    /// The category of templates shown; `None` lists them all
+    #[serde(skip)]
+    pub new_graph_category: Option<materialcraft_engine::core::GraphKind>,
+    /// The package a new graph goes in; `None` is a new package
+    #[serde(skip)]
+    pub new_graph_package: Option<u64>,
+    /// A card was double-clicked: create on this frame
+    #[serde(skip)]
+    pub new_graph_create_now: bool,
     /// Export window: the saved settings, the open tab and the copy the open window edits
     pub export: crate::export::ExportSettings,
     pub export_tab: crate::export::ExportTab,
     #[serde(skip)]
     pub export_draft: Option<crate::export::ExportSettings>,
+    /// The open Preferences window's page, the preferences Cancel returns to, and the Shortcuts page's search
+    #[serde(skip)]
+    pub preferences: crate::preferences::PreferencesState,
+    /// The Plugin Manager's filter text
+    #[serde(skip)]
+    pub plugin_filter: String,
     /// Frame the whole graph on the next frame
     #[serde(skip)]
     pub frame_all: bool,
@@ -67,19 +85,31 @@ impl Default for UiState {
             new_graph_template: "pbr".into(),
             new_graph_name: "New_graph".into(),
             new_graph_size: 1024,
+            new_graph_height: 1024,
+            new_graph_linked: true,
+            new_graph_category: None,
+            new_graph_package: None,
+            new_graph_create_now: false,
             export: crate::export::ExportSettings::default(),
             export_tab: crate::export::ExportTab::default(),
             export_draft: None,
+            preferences: Default::default(),
+            plugin_filter: String::new(),
             frame_all: true,
         }
     }
 }
 
 impl UiState {
-    /// Remember `path` at the top of the recent list
+    /// Preferences committed by Apply or OK, including while the window shows a draft
+    pub(crate) fn committed_prefs(&self) -> &Prefs {
+        self.preferences.applied.as_ref().unwrap_or(&self.prefs)
+    }
+
+    /// Remember `path` at the top of the recent list, keeping as many as the preferences ask for
     pub fn add_recent(&mut self, path: &str) {
-        self.recent.retain(|p| p != path);
+        self.recent.retain(|recent| recent != path);
         self.recent.insert(0, path.to_string());
-        self.recent.truncate(12);
+        self.recent.truncate(self.committed_prefs().recent_limit.clamp(1, Prefs::MAX_RECENT));
     }
 }

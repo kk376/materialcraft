@@ -8,7 +8,12 @@ use egui_kittest::Harness;
 use materialcraft_ui_egui::{MaterialCraftApp, UiState};
 
 fn harness(w: f32, h: f32) -> Harness<'static, MaterialCraftApp> {
-    let app = MaterialCraftApp::headless(materialcraft_engine::sample_session(), UiState::default());
+    let mut app = MaterialCraftApp::headless(materialcraft_engine::sample_session(), UiState::default());
+
+    // Retain real background rendering with fewer pixels to test resize scheduling under coverage
+    app.session.view3d.override_resolution = true;
+    app.session.view3d.viewport_resolution = true;
+    app.session.view3d.render_scale = 25;
     Harness::builder().with_size(vec2(w, h)).with_pixels_per_point(1.0).build_ui_state(
         |ui, app: &mut MaterialCraftApp| {
             app.step(&ui.ctx().clone());
@@ -24,7 +29,7 @@ fn settle(h: &mut Harness<'static, MaterialCraftApp>) {
         h.step();
         let app = h.state();
         if !app.cooker.busy() && !app.session.dirty && !app.view3d.busy() && app.view3d.renders > 0 {
-            // A few more frames: the settle delay may still be running after the last change.
+            // Allow the resize settle delay to elapse after the last change
             for _ in 0..20 {
                 h.step();
             }
@@ -34,7 +39,14 @@ fn settle(h: &mut Harness<'static, MaterialCraftApp>) {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    panic!("the 3D view never settled");
+    let app = h.state();
+    panic!(
+        "the 3D view never settled: cooker={}, dirty={}, view_busy={}, renders={}",
+        app.cooker.busy(),
+        app.session.dirty,
+        app.view3d.busy(),
+        app.view3d.renders
+    );
 }
 
 #[test]
@@ -43,14 +55,16 @@ fn a_resize_does_not_render_the_3d_view_on_every_frame() {
     settle(&mut h);
     let before = h.state().view3d.renders;
     let shown = h.state().view3d.shown.as_ref().map(|(w, ht, _)| (*w, *ht));
-    // A drag: the window (and with it every panel) gets narrower on each of 40 frames.
+
+    // Simulate a continuous window resize
     for i in 0..40 {
         h.set_size(vec2(1400.0 - 4.0 * i as f32, 860.0));
         h.step();
     }
     assert_eq!(h.state().view3d.renders, before, "the 3D view rendered while it was being resized");
     assert!(!h.state().view3d.busy(), "a render started while the view was being resized");
-    // Released: one full-quality frame at the new size, in the background.
+
+    // Expect one background render once the size settles
     settle(&mut h);
     assert_eq!(h.state().view3d.renders, before + 1);
     let now = h.state().view3d.shown.as_ref().map(|(w, ht, _)| (*w, *ht));

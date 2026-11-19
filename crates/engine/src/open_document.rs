@@ -84,10 +84,10 @@ impl OpenDocument {
     }
 
     /// A document that was just opened, with the 3D view a new document starts from
-    pub(crate) fn new(id: u64, pkg: Package, path: Option<String>, view3d: View3d) -> Self {
+    pub(crate) fn new(id: u64, pkg: Package, path: Option<String>, view3d: View3d, show_outputs: bool) -> Self {
         Self {
             id,
-            material_preview: MaterialPreview::for_graph(&pkg, 0),
+            material_preview: if show_outputs { MaterialPreview::for_graph(&pkg, 0) } else { MaterialPreview::default() },
             pkg,
             path,
             graph: 0,

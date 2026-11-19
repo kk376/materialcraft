@@ -25,7 +25,7 @@ pub(super) fn show(
         .filter(|identifier| app.session.graph().is_ok_and(|graph| graph.exposed.iter().any(|input| input.id == *identifier)))
         .or_else(|| base.is_none().then(|| node.bindings.get(&descriptor.id).map(String::as_str)).flatten());
     let driven = function.is_some() || bound.is_some();
-    let evaluated = (!app.session.dirty && !app.cooker.busy())
+    let evaluated = crate::cook::preview_ready(app)
         .then(|| app.session.cooked.nodes.get(&node.id))
         .flatten()
         .filter(|result| result.error.is_none())

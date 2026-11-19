@@ -390,12 +390,7 @@ See [atomic-workflow.md](atomic-workflow.md) for the tested scope and remaining 
 
 ## Other apps
 
-A `.mcmat` portable material (`formats/src/material/`, `engine/src/material_cmds.rs`) holds a
-graph's cooked maps, its portable exposed inputs, presets and input nodes, and the source package.
-TextureCraft paints with it and re-cooks it by running `materialcraft-cli run <package>
-file.exportMaterial {path, size, values, inputs}`: the apps share the file format and the command
-line, never code. Graphs keep preview images for their input nodes (`Graph::input_images`, mesh
-maps from TextureCraft); `eval::cook` feeds them to the top-level graph, and a caller's images win.
+The MCMAT v3 publisher (`formats/src/material/`) copies a selected graph, its reachable graph and function definitions, and their resource bytes into a single SBS document with local references. The shared `craft-mcmat` crate writes the ZIP. The reader selects the sole root graph by its location. `engine/src/material_bake.rs` evaluates variations through the CPU cook engine. The CLI exposes the same entry for inspection, TextureCraft's labeled map export and the MaterialX OpenPBR export. Supplied images override the graph's saved input previews for that cook.
 
 Preview cooks publish the editor graph and assigned material graphs together. A synchronous cook
 invalidates older worker results. Displacement uses the assigned Height source even while another

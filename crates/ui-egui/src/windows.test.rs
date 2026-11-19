@@ -38,14 +38,14 @@ mod home_modality_tests {
     fn home_actions_are_live_when_nothing_blocks_them() {
         let harness = harness(|_| {});
         assert!(open_package(&harness));
-        assert!(!harness.get(By::new().role(egui::accesskit::Role::Button).label("New graph")).accesskit_node().is_disabled());
+        assert!(!harness.get(By::new().role(egui::accesskit::Role::Button).label_contains("New graph")).accesskit_node().is_disabled());
     }
 
     #[test]
     fn open_package_is_off_behind_a_dialog_and_home_stays_open() {
         let harness = harness(|app| app.ui.windows.about = true);
         assert!(!open_package(&harness));
-        assert!(harness.get(By::new().role(egui::accesskit::Role::Button).label("New graph")).accesskit_node().is_disabled());
+        assert!(harness.get(By::new().role(egui::accesskit::Role::Button).label_contains("New graph")).accesskit_node().is_disabled());
         assert!(harness.state().ui.windows.home);
     }
 
@@ -62,7 +62,7 @@ mod home_modality_tests {
     #[test]
     fn a_sample_tile_and_a_recent_link_wait_behind_a_file_dialog() {
         let mut harness = harness(file_dialog);
-        assert!(harness.get(By::new().role(egui::accesskit::Role::Link).label("recent.sbs")).accesskit_node().is_disabled());
+        assert!(harness.get(By::new().role(egui::accesskit::Role::Button).label_contains("recent.sbs")).accesskit_node().is_disabled());
         let graphs = harness.state().session.pkg.graphs.len();
         let (_, sample) = materialcraft_engine::samples::TEMPLATES.iter().find(|(id, _)| !matches!(*id, "empty" | "pbr")).unwrap();
         harness.get(By::new().role(egui::accesskit::Role::ListItem).label(sample)).click();
@@ -130,6 +130,7 @@ mod import_tests {
         assert_eq!(app.session.history().len(), base);
     }
 }
+
 #[test]
 fn project_dialogs_offer_separate_formats_and_import_filters_show_full_names() {
     use super::{package_filters, resource_filters};
@@ -140,8 +141,9 @@ fn project_dialogs_offer_separate_formats_and_import_filters_show_full_names() {
 
     let opened = package_filters(true, false);
 
-    assert_eq!(opened[0], ("All formats (*.sbs *.mcraft)", &["sbs", "mcraft"][..]));
-    assert_eq!(&opened[1..], &saved);
+    assert_eq!(opened[0], ("All formats (*.sbs *.mcraft *.mcmat)", &["sbs", "mcraft", "mcmat"][..]));
+    assert_eq!(&opened[1..3], &saved);
+    assert_eq!(opened[3].1, &["mcmat"]);
 
     let bitmap = resource_filters(false);
 
@@ -149,4 +151,27 @@ fn project_dialogs_offer_separate_formats_and_import_filters_show_full_names() {
     assert!(bitmap.iter().any(|(label, _)| label == "Portable Network Graphics (*.png)"));
     assert!(bitmap.iter().any(|(label, _)| label == "JPEG - JFIF Compliant (*.jpg *.jif *.jpeg *.jpe)"));
     assert_eq!(resource_filters(true)[1].0, "Scalable Vector Graphics (*.svg)");
+}
+
+#[test]
+fn template_texture_handles_drop_with_their_application() {
+    let context = egui::Context::default();
+    let manager = context.tex_manager();
+    let initial_count = manager.read().num_allocated();
+
+    for name in ["empty", "pbr", "atomics"] {
+        let mut app = crate::MaterialCraftApp::headless(materialcraft_engine::new_session(), crate::UiState::default());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(vec![(name.to_string(), vec![255; (super::PREVIEW * super::PREVIEW * 4) as usize])]).unwrap();
+        app.template_previews.rx = Some(receiver);
+        app.template_previews.started = true;
+
+        let texture = super::template_preview(&mut app, &context, name).unwrap();
+
+        assert!(manager.read().meta(texture).is_some());
+        assert_eq!(manager.read().num_allocated(), initial_count + 1);
+        drop(app);
+        assert!(manager.read().meta(texture).is_none());
+        assert_eq!(manager.read().num_allocated(), initial_count);
+    }
 }

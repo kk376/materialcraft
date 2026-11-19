@@ -37,11 +37,10 @@ craft-ui = { workspace = true, features = ["native-windows"] }
 
 # Browser file I/O (web_files.rs): async pickers and Blob downloads.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+craft-platform = { workspace = true, features = ["browser"] }
 rfd = { workspace = true }
-wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Document", "HtmlElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url", "CssStyleDeclaration", "Navigator"] }
+web-sys = { version = "0.3", features = ["Window", "Navigator"] }
 
 # winit needs a window system on Linux, so the crate's own tests build with X11.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

@@ -78,7 +78,7 @@ impl Session {
 
     /// Show a material graph on open, retaining the material while editing functions
     pub(crate) fn open_material_preview(&mut self) {
-        if self.graph().is_ok_and(|graph| graph.function.is_none()) {
+        if self.view_outputs_on_open && self.graph().is_ok_and(|graph| graph.function.is_none()) {
             self.material_preview = MaterialPreview::for_graph(&self.pkg, self.graph);
         }
     }

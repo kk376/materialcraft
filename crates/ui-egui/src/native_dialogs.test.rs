@@ -7,6 +7,21 @@ fn app() -> MaterialCraftApp {
     MaterialCraftApp::headless(materialcraft_engine::sample_session(), UiState::default())
 }
 
+#[test]
+fn exported_log_keeps_events_and_strips_raw_document_details() {
+    let mut app = app();
+    app.session.log("Opened C:\\My projects\\Client sample.sbs");
+    app.session.warn("Invalid resource at /home/person/private textures/input.png");
+
+    let report = log_for_export(&app.session);
+
+    assert!(report.contains("Opened package"));
+    assert!(report.contains("Package warning"));
+    assert!(report.contains("Node errors in the active graph: 0"));
+    assert!(!report.contains("Client sample"));
+    assert!(!report.contains("/home/person"));
+}
+
 /// Answer every queued dialog with `answer` and collect what was asked
 fn answer_all(app: &mut MaterialCraftApp, answer: impl Fn() -> Answer + 'static) -> Vec<Request> {
     let asked = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -470,12 +485,14 @@ fn a_saved_package_goes_to_the_document_that_asked() {
     let second = app.session.document_id;
     assert_ne!(first, second, "a second package is open");
 
-    let path = temp("first.sbs");
+    // Keep adjacent SBS resources in an exclusive directory
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("first.sbs");
+
     let saved = save_to(&mut app, first, false, &path.display().to_string());
-    assert!(saved);
+    assert!(saved, "{}", app.toasts.last().map_or("no error toast", |toast| toast.text.as_str()));
     assert_eq!(app.session.document_id, first, "the asking package is active again");
     assert_eq!(app.session.path.as_deref().map(std::path::PathBuf::from), std::fs::canonicalize(&path).ok());
-    std::fs::remove_file(path).ok();
 }
 
 #[test]

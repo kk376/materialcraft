@@ -13,6 +13,31 @@ fn labels(app: &MaterialCraftApp) -> Vec<String> {
     visible(app, &entries, &LibraryTarget::of(app)).into_iter().map(|entry| entry.label.clone()).collect()
 }
 
+#[test]
+fn catalog_hits_share_entries_and_replaced_packages_release_them() {
+    let mut app = app();
+    let context = egui::Context::default();
+    let path = "sbs://test/replaced.sbs";
+
+    for name in ["First", "Second", "Third"] {
+        let catalog = entries(&app, &context);
+        assert!(Arc::ptr_eq(&catalog, &entries(&app, &context)));
+        let previous = Arc::downgrade(&catalog);
+        drop(catalog);
+
+        app.session.pkg.dependencies.insert(path.into(), Arc::new(materialcraft_engine::core::Package::new(name)));
+        let replacement = entries(&app, &context);
+
+        assert!(previous.upgrade().is_none());
+        assert!(!replacement.is_empty());
+    }
+
+    let last = Arc::downgrade(&entries(&app, &context));
+    drop(context);
+
+    assert!(last.upgrade().is_none());
+}
+
 /// Open project graphs remain separate from reusable library entries.
 #[test]
 fn open_package_graphs_are_explorer_resources_not_library_entries() {

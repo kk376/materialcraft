@@ -206,8 +206,6 @@ pub use web::*;
 mod web {
     use std::sync::PoisonError;
 
-    use wasm_bindgen::JsCast as _;
-
     use super::{INBOX, Pick, zip_files};
     use crate::MaterialCraftApp;
     use crate::i18n::tr;
@@ -320,27 +318,12 @@ mod web {
 
     /// Start a browser download of `bytes` named `name` (Blob + a temporary `<a download>`)
     pub fn download(name: &str, bytes: &[u8]) -> Result<(), String> {
-        let js = |e: wasm_bindgen::JsValue| format!("{e:?}");
-        let window = web_sys::window().ok_or("no window")?;
-        let document = window.document().ok_or("no document")?;
-        let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
-        let opts = web_sys::BlobPropertyBag::new();
-        opts.set_type(if name.ends_with(".zip") { "application/zip" } else { "application/octet-stream" });
-        let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts).map_err(js)?;
-        let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(js)?;
-        let a: web_sys::HtmlAnchorElement = document.create_element("a").map_err(js)?.dyn_into().map_err(|_| "not an anchor")?;
-        a.set_href(&url);
-        a.set_download(name);
-        a.style().set_property("display", "none").map_err(js)?;
-        document.body().ok_or("no body")?.append_child(&a).map_err(js)?;
-        a.click();
-        a.remove();
-        // Revoke once the click has been dispatched; the download keeps its own reference
-        let revoke = wasm_bindgen::closure::Closure::once_into_js(move || {
-            web_sys::Url::revoke_object_url(&url).ok();
-        });
-        window.set_timeout_with_callback_and_timeout_and_arguments_0(revoke.unchecked_ref(), 10_000).map_err(js)?;
-        Ok(())
+        use craft_platform::browser::{DownloadOptions, download_bytes};
+
+        // Allow the browser to acquire the Blob after the click
+        const DOWNLOAD_URL_LIFETIME_MS: i32 = 10_000;
+        let mime = if name.ends_with(".zip") { "application/zip" } else { "application/octet-stream" };
+        download_bytes(name, mime, bytes, DownloadOptions { revoke_after_ms: DOWNLOAD_URL_LIFETIME_MS }).map_err(|error| format!("{error:?}"))
     }
 }
 

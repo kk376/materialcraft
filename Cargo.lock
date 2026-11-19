@@ -937,9 +937,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "craft-mcmat"
+name = "craft-materialx"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=453b0da782ccef39be9a6dac8d27c80b553ef1cc#453b0da782ccef39be9a6dac8d27c80b553ef1cc"
+dependencies = [
+ "craft-xml",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-mcmat"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=7a7a18cb40ac4cd5fca29c0dc224ac5178d40a89#7a7a18cb40ac4cd5fca29c0dc224ac5178d40a89"
 dependencies = [
  "craft-zip",
  "serde",
@@ -988,6 +997,16 @@ dependencies = [
  "chrono",
  "craft-codepage",
  "encoding_rs",
+]
+
+[[package]]
+name = "craft-platform"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=453b0da782ccef39be9a6dac8d27c80b553ef1cc#453b0da782ccef39be9a6dac8d27c80b553ef1cc"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -1112,7 +1131,7 @@ dependencies = [
 [[package]]
 name = "craft-zip"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=453b0da782ccef39be9a6dac8d27c80b553ef1cc#453b0da782ccef39be9a6dac8d27c80b553ef1cc"
+source = "git+https://github.com/storytold/craft-libs?rev=7a7a18cb40ac4cd5fca29c0dc224ac5178d40a89#7a7a18cb40ac4cd5fca29c0dc224ac5178d40a89"
 dependencies = [
  "flate2",
  "thiserror 2.0.21",
@@ -2823,6 +2842,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
 ]
@@ -2834,6 +2854,7 @@ dependencies = [
  "materialcraft-automation",
  "materialcraft-engine",
  "serde_json",
+ "tempfile",
  "tokio",
  "winresource",
 ]
@@ -2851,6 +2872,7 @@ dependencies = [
 name = "materialcraft-engine"
 version = "0.4.1"
 dependencies = [
+ "craft-materialx",
  "craft-texture",
  "image",
  "materialcraft-core",
@@ -2858,9 +2880,11 @@ dependencies = [
  "materialcraft-formats",
  "materialcraft-geom",
  "materialcraft-nodes",
+ "rustix 1.1.6",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 
@@ -2881,6 +2905,7 @@ name = "materialcraft-formats"
 version = "0.4.1"
 dependencies = [
  "base64 0.22.1",
+ "craft-atomic",
  "craft-fonts-build",
  "craft-mcmat",
  "craft-mesh",
@@ -2941,6 +2966,7 @@ dependencies = [
  "craft-atomic",
  "craft-dialogs",
  "craft-keymap",
+ "craft-platform",
  "craft-quit",
  "craft-ui",
  "craft-update",
@@ -2950,7 +2976,6 @@ dependencies = [
  "egui-phosphor",
  "egui_kittest",
  "image",
- "js-sys",
  "log",
  "materialcraft-engine",
  "materialcraft-render",
@@ -2961,7 +2986,6 @@ dependencies = [
  "sys-locale",
  "tempfile",
  "unicode-normalization",
- "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
  "zip 2.6.1",

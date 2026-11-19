@@ -84,14 +84,17 @@ cap-std = "4"
 getrandom = "0.3"
 unicode-normalization = "0.1"
 # Shared Craft egui components from storytold/craft-libs
-# MIT OR Apache-2.0; all shared dependencies use one reviewed revision
+# MIT OR Apache-2.0
 egui_kittest = "0.37"
-craft-mcmat = { git = "https://github.com/storytold/craft-libs", rev = "453b0da782ccef39be9a6dac8d27c80b553ef1cc" }
+craft-materialx = { git = "https://github.com/storytold/craft-libs", rev = "453b0da782ccef39be9a6dac8d27c80b553ef1cc" }
+# MCMAT v3 uses its merged archive revision and the matching ZIP crate
+craft-mcmat = { git = "https://github.com/storytold/craft-libs", rev = "7a7a18cb40ac4cd5fca29c0dc224ac5178d40a89" }
 craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "453b0da782ccef39be9a6dac8d27c80b553ef1cc", features = ["serde"] }
 # Keyboard bindings (chords, dispatch and display text): storytold/craft-libs, MIT OR Apache-2.0
 craft-keymap = { git = "https://github.com/storytold/craft-libs", rev = "453b0da782ccef39be9a6dac8d27c80b553ef1cc", features = ["egui"] }
 # Native dialogs that do not block the event loop: storytold/craft-libs, MIT OR Apache-2.0
 craft-dialogs = { git = "https://github.com/storytold/craft-libs", rev = "453b0da782ccef39be9a6dac8d27c80b553ef1cc" }
+craft-platform = { git = "https://github.com/storytold/craft-libs", rev = "453b0da782ccef39be9a6dac8d27c80b553ef1cc" }
 # The platform quit and the macOS Quit menu item: storytold/craft-libs, MIT OR Apache-2.0
 craft-quit = { git = "https://github.com/storytold/craft-libs", rev = "453b0da782ccef39be9a6dac8d27c80b553ef1cc", features = ["egui"] }
 craft-menu = { git = "https://github.com/storytold/craft-libs", rev = "453b0da782ccef39be9a6dac8d27c80b553ef1cc" }

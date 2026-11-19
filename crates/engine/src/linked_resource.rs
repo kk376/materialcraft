@@ -5,6 +5,34 @@ use std::io::Read as _;
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_LINKED_RESOURCE_BYTES: u64 = 256 << 20;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn read_regular(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    use std::io::{Error, ErrorKind};
+    let mut open = std::fs::OpenOptions::new();
+    open.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // A named pipe must reach the regular-file check without waiting for a writer
+        open.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
+    }
+    let file = open.open(path)?;
+    let metadata = file.metadata()?;
+    let invalid = || Error::new(ErrorKind::InvalidData, "expected a regular file of at most 256 MiB");
+    if !metadata.is_file() || metadata.len() > MAX_LINKED_RESOURCE_BYTES {
+        return Err(invalid());
+    }
+
+    let mut data = Vec::new();
+    file.take(MAX_LINKED_RESOURCE_BYTES + 1).read_to_end(&mut data)?;
+    if data.len() as u64 > MAX_LINKED_RESOURCE_BYTES {
+        return Err(invalid());
+    }
+
+    Ok(data)
+}
+
 /// Read resource paths relative to an SBS package, including portable library aliases.
 pub fn reader(path: &str) -> impl Fn(&str) -> Option<Vec<u8>> + use<> {
     let owner = path.to_string();
@@ -44,16 +72,13 @@ pub fn reader(path: &str) -> impl Fn(&str) -> Option<Vec<u8>> + use<> {
 
             let folder = folder.as_ref()?;
             let file = std::fs::canonicalize(folder.join(&relative)).ok()?;
-            let metadata = std::fs::metadata(&file).ok()?;
 
             // Parent references are legal inside the configured library, never beyond its root
-            if !file.starts_with(allowed_root.as_ref()?) || !metadata.is_file() || metadata.len() > MAX_LINKED_RESOURCE_BYTES {
+            if !file.starts_with(allowed_root.as_ref()?) {
                 return None;
             }
 
-            let mut bytes = Vec::new();
-            std::fs::File::open(&file).ok()?.take(MAX_LINKED_RESOURCE_BYTES + 1).read_to_end(&mut bytes).ok()?;
-            (bytes.len() as u64 <= MAX_LINKED_RESOURCE_BYTES).then_some(bytes)
+            read_regular(&file).ok()
         }
         #[cfg(target_arch = "wasm32")]
         None

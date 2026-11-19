@@ -145,11 +145,12 @@ cargo run --release -p materialcraft                          # desktop app
 cargo run --release -p materialcraft -- package.sbs           # open an SBS package
 cargo run --release -p materialcraft -- --control 7878        # + JSON control channel
 cargo run --release -p materialcraft-cli -- mcp               # MCP server (stdio)
-cargo run --release -p materialcraft-cli -- new wood wood.sbs
-cargo run --release -p materialcraft-cli -- render wood.sbs wood.png --scene sphere --full --hq
-cargo run --release -p materialcraft-cli -- export wood.sbs textures --format png --depth 16
+cargo run --release -p materialcraft-cli -- new pbr surface.sbs --name Surface
+cargo run --release -p materialcraft-cli -- render surface.sbs surface.png --scene sphere --full --hq
+cargo run --release -p materialcraft-cli -- export surface.sbs textures --format png --depth 16
 cargo run --release -p materialcraft-cli -- export my.sbs out --set wear=0.7    # with a graph input "wear" set first
-cargo run --release -p materialcraft-cli -- run my.sbs file.exportMaterial '{"path": "my.mcmat", "size": 2048}'   # for TextureCraft
+cargo run --release -p materialcraft-cli -- publish surface.sbs surface.mcmat --graph Surface
+cargo run --release -p materialcraft-cli -- export surface.mcmat build/surface --profile materialx --size 512
 cd apps/materialcraft-web && trunk serve                      # web build
 cargo xtask ci                                                # fmt, clippy, tests, layering, wasm
 ```

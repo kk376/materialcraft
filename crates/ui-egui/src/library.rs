@@ -73,19 +73,21 @@ fn category_icon(category: &str) -> &'static str {
 }
 
 /// The library's entries for the open session, rebuilt when its packages change
-fn entries(app: &MaterialCraftApp, ctx: &egui::Context) -> Arc<Vec<LibraryEntry>> {
+pub(crate) fn entries(app: &MaterialCraftApp, ctx: &egui::Context) -> Arc<Vec<LibraryEntry>> {
     type Cached = (Vec<(String, usize)>, Arc<Vec<LibraryEntry>>);
-    let mut key: Vec<(String, usize)> = vec![(String::new(), Arc::as_ptr(&app.session.library) as usize)];
-    key.extend(
-        app.session.pkg.dependencies.iter().filter(|(path, _)| path.starts_with("sbs://")).map(|(path, package)| (path.clone(), Arc::as_ptr(package) as usize)),
-    );
+    let library = ("", Arc::as_ptr(&app.session.library) as usize);
+    let packages = app.session.pkg.dependencies.iter().filter(|(path, _)| path.starts_with("sbs://"));
+    let key = std::iter::once(library).chain(packages.map(|(path, package)| (path.as_str(), Arc::as_ptr(package) as usize)));
+
     let id = egui::Id::unique("library-entries");
-    if let Some((cached, list)) = ctx.data(|data| data.get_temp::<Arc<Cached>>(id)).as_deref()
-        && *cached == key
+    let previous = ctx.data(|data| data.get_temp::<Arc<Cached>>(id));
+    if let Some((cached, list)) = previous.as_deref()
+        && cached.iter().map(|(path, address)| (path.as_str(), *address)).eq(key.clone())
     {
         return list.clone();
     }
 
+    let key: Vec<_> = key.map(|(path, address)| (path.to_owned(), address)).collect();
     let list = Arc::new(app.session.library_entries());
     ctx.data_mut(|data| data.insert_temp(id, Arc::new((key, list.clone()))));
     list

@@ -31,6 +31,9 @@ mod library;
 #[path = "snapshot/menu.rs"]
 mod menu;
 
+#[path = "snapshot/menus_and_preferences.rs"]
+mod menus_and_preferences;
+
 #[path = "snapshot/node_search.rs"]
 mod node_search;
 
@@ -177,14 +180,25 @@ fn explorer_drags_a_linked_graph_between_open_packages() {
     harness.state_mut().run("graph.node.param", json!({"id": color.0, "param": "color", "value": [0.9, 0.3, 0.1, 1.0]})).unwrap();
     let position = harness.get(By::new().role(egui::accesskit::Role::TreeItem).label("Target canvas")).rect().center();
     double_click(&mut harness, position);
-    settle(&mut harness, 8);
+
+    // Wait for the linked graph to be recooked after switching back to its document
+    let expected_pixel = [0.9, 0.3, 0.1, 1.0];
+    let linked_color_updated = |harness: &Harness<'static, MaterialCraftApp>| {
+        harness
+            .state()
+            .session
+            .cooked
+            .image(instance, 0)
+            .is_some_and(|image| image.get(0, 0, false).into_iter().zip(expected_pixel).all(|(actual, expected)| (actual - expected).abs() <= 1.0 / 255.0))
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    while !linked_color_updated(&harness) && std::time::Instant::now() < deadline {
+        settle(&mut harness, 1);
+    }
 
     assert_eq!(harness.state().session.document_id, target_document);
     assert_eq!(harness.state().session.history(), ["Add graph instance"]);
-
-    let value = harness.state().session.cooked.image(instance, 0).unwrap().get(0, 0, false);
-
-    assert!(value.into_iter().zip([0.9, 0.3, 0.1, 1.0]).all(|(actual, expected)| (actual - expected).abs() <= 1.0 / 255.0));
+    assert!(linked_color_updated(&harness), "the linked instance uses the updated source pixel");
     assert!(harness.state().session.modified);
 
     save(&mut harness, &directory, "linked-instance-source-edit");
@@ -766,11 +780,9 @@ fn empty_startup_can_create_a_template() {
     }
     harness.get_by_label("New graph...").click();
     settle(&mut harness, 4);
-    harness.get(By::new().role(egui::accesskit::Role::ComboBox).label("Template")).click();
-    settle(&mut harness, 2);
-    harness.get_by_label("Atomic sample").click();
+    harness.get(By::new().role(egui::accesskit::Role::ListItem).label("Atomic sample")).click();
     settle(&mut harness, 4);
-    harness.get_by_label("Create").click();
+    harness.get(By::new().role(egui::accesskit::Role::Button).label("Create")).click();
     settle(&mut harness, 40);
     assert_eq!(harness.state().session.pkg.graphs.len(), 2);
     assert!(!harness.state().session.graph().unwrap().nodes.is_empty());
@@ -1166,10 +1178,10 @@ fn annotations_and_function_graph_creation() {
 
     harness.state_mut().ui.windows.new_graph = true;
     settle(&mut harness, 3);
-    harness.get_by_label("Function Graph").click();
+    harness.get(By::new().role(egui::accesskit::Role::ListItem).label("Function graph")).click();
     settle(&mut harness, 3);
     save(&mut harness, &directory, "new-function-graph");
-    harness.get_by_label("Create").click();
+    harness.get(By::new().role(egui::accesskit::Role::Button).label("Create")).click();
     settle(&mut harness, 3);
     assert_eq!(harness.state().session.graph().unwrap().kind(), GraphKind::Function);
 
@@ -1671,7 +1683,22 @@ fn explorer_inputs_and_graph_drop_share_labels_and_material_assignment() {
 
     save(&mut harness, &directory, "graph-drop-target");
     harness.event(egui::Event::PointerButton { pos: end, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
-    settle(&mut harness, 45);
+
+    // Process the queued release before testing a frame that may already show the hover preview
+    harness.step();
+
+    let has_expected_material = |harness: &Harness<'static, MaterialCraftApp>| {
+        harness
+            .state()
+            .view3d
+            .shown
+            .as_ref()
+            .is_some_and(|(_, _, frame)| frame.as_chunks::<4>().0.iter().filter(|pixel| u16::from(pixel[0]) > u16::from(pixel[1]) + 30).nth(100).is_some())
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    while !has_expected_material(&harness) && std::time::Instant::now() < deadline {
+        settle(&mut harness, 1);
+    }
 
     assert_eq!(harness.state().session.graph, graph, "dropping a graph must not open it");
     assert_eq!(harness.state().session.view3d, camera, "dropping must not orbit the camera");
@@ -1681,9 +1708,7 @@ fn explorer_inputs_and_graph_drop_share_labels_and_material_assignment() {
 
     assert_eq!((binding.graph, binding.node), (0, NodeId(output)));
 
-    let frame = &harness.state().view3d.shown.as_ref().unwrap().2;
-
-    assert!(frame.as_chunks::<4>().0.iter().filter(|pixel| u16::from(pixel[0]) > u16::from(pixel[1]) + 30).count() > 100);
+    assert!(has_expected_material(&harness), "the assigned material appears in the rendered frame");
 
     save(&mut harness, &directory, "graph-dropped-on-material");
 }
@@ -1697,10 +1722,14 @@ fn library_cache_preferences() {
     h.state_mut().ui.windows.preferences = true;
     settle(&mut h, 4);
 
+    // The dock has a Library tab too, so the page is chosen directly
+    h.state_mut().ui.preferences.page = materialcraft_ui_egui::preferences::PreferencesPage::Library;
+    settle(&mut h, 4);
+
     assert!(h.query_all(By::new().label("Disk limit (MiB, 0 = off)")).next().is_some());
     assert!(h.query_all(By::new().label("Maximum stored previews")).next().is_some());
 
-    h.get_by_label("Clear cache").click();
+    h.get_by_label("Rebuild thumbnails").click();
     settle(&mut h, 4);
 
     assert_eq!(h.state().session.library_cache_clear_epoch, 1);

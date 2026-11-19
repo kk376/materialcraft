@@ -4,7 +4,8 @@ use serde_json::json;
 
 #[test]
 fn reopening_relative_paths_activates_the_existing_document_and_preserves_edits() {
-    let root = std::env::temp_dir().join(format!("materialcraft-workspace-reopen-{}", std::process::id()));
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().to_path_buf();
     std::fs::create_dir_all(&root).unwrap();
 
     for extension in ["sbs", "mcraft"] {
@@ -42,13 +43,12 @@ fn reopening_relative_paths_activates_the_existing_document_and_preserves_edits(
         assert!(root.join(&filename).is_file());
         assert_eq!(reopened.session.path.as_deref(), Some(filename.as_str()));
     }
-
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn both_formats_save_and_reopen_using_separate_workspace_capabilities() {
-    let root = std::env::temp_dir().join(format!("materialcraft-workspace-packages-{}", std::process::id()));
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().to_path_buf();
     let input = root.join("input");
     let output = root.join("output");
     std::fs::create_dir_all(&input).unwrap();
@@ -83,5 +83,102 @@ fn both_formats_save_and_reopen_using_separate_workspace_capabilities() {
 
     // Release workspace directory handles before Windows removes the test tree
     drop(app);
-    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scoped_publication_resolves_linked_graphs_and_images_using_the_granted_read_root() {
+    use materialcraft_engine::core::{Graph, GraphInstance, GraphPort, Resource, ResourceBytes, Value};
+    use materialcraft_engine::{formats, image};
+
+    let directory = tempfile::tempdir().unwrap();
+    let dir = directory.path();
+    let input = dir.join("input");
+    let output = dir.join("published");
+    std::fs::create_dir_all(input.join("parts")).unwrap();
+    std::fs::create_dir_all(&output).unwrap();
+
+    let image = image::Image::filled(2, 2, image::Kind::Color, [0.25, 0.5, 0.75, 1.0]);
+    let pixels = formats::encode(&image, "png", formats::Depth::U8, false).unwrap();
+    let mut helpers = Package::new("Helpers");
+    helpers.resources.push(Resource::new("finish", "finish.png", ResourceBytes::new(pixels.clone())));
+    let mut finish = Graph::new("Finish");
+    let bitmap = finish.add_node("bitmap", [0.0; 2]);
+    finish.node_mut(bitmap).unwrap().params.insert("resource".into(), Value::Text("finish".into()));
+    let finish_output = finish.add_node("output", [0.0; 2]);
+    finish.node_mut(finish_output).unwrap().params.insert("identifier".into(), Value::Text("basecolor".into()));
+    finish.connect(bitmap, "output", finish_output, "input").unwrap();
+    helpers.graphs.push(finish);
+    let helper = formats::project::ProjectFiles::build(&helpers, "finish.sbs", false).unwrap();
+    formats::project::write_files(&input.join("parts/finish.sbs"), &helper).unwrap();
+    std::fs::write(dir.join("outside.sbs"), helper.xml().unwrap()).unwrap();
+
+    for (project, dependency) in [("surface.sbs", "parts/finish.sbs"), ("missing.sbs", "../outside.sbs")] {
+        let mut graph = Graph::new("Oak");
+        let call = graph.add_node("graph_instance", [0.; 2]);
+        graph.node_mut(call).unwrap().instance = Some(GraphInstance {
+            package: dependency.into(),
+            graph: "Finish".into(),
+            inputs: vec![],
+            outputs: vec![GraphPort { identifier: "basecolor".into(), type_code: 2 }],
+            defaults: Default::default(),
+            label: String::new(),
+        });
+        let node = graph.add_node("output", [200., 0.]);
+        graph.node_mut(node).unwrap().params.extend([("identifier".into(), Value::Text("color".into())), ("usage".into(), Value::Enum(0))]);
+        graph.connect(call, "basecolor", node, "input").unwrap();
+        let mut package = Package::new("Surface");
+        package.graphs.push(graph);
+        std::fs::write(input.join(project), formats::sbs::write_sbs(&package).unwrap()).unwrap();
+        let fs = AuthorizedWorkspace::new(Some(&input), Some(&output)).unwrap();
+        let mut app = Headless::new(Session::new(Package::new("Empty")), Filesystem::Workspace(fs));
+        app.load(project).unwrap();
+        let result = app.export_material(&json!({"path":format!("{project}.mcmat")}));
+        if project == "surface.sbs" {
+            assert!(result.is_ok(), "{result:?}");
+            let (pkg, entry) = formats::material::read_material(&std::fs::read(output.join("surface.sbs.mcmat")).unwrap()).unwrap();
+            let entry = pkg.graph(entry).unwrap();
+            assert_eq!(entry.name, "Oak");
+            assert_eq!(pkg.graphs.len(), 2);
+            let instance = entry.instances().next().unwrap();
+            assert!(instance.package.is_empty());
+            assert_eq!(entry.instances().count(), 1);
+            assert_eq!(pkg.graph_by_name(&instance.graph).unwrap().1.name, "Finish");
+            assert_eq!(pkg.resources.len(), 1);
+            assert_eq!(pkg.resources[0].bytes.as_slice(), pixels);
+
+            // Rebase links from the actual destination under the granted write root
+            app.save(Some("saved.sbs")).unwrap();
+            let xml = std::fs::read_to_string(output.join("saved.sbs")).unwrap();
+            assert!(xml.contains("../input/parts/finish.sbs"), "{xml}");
+            assert_eq!(app.session.path.as_deref(), Some("saved.sbs"));
+            let workspace = AuthorizedWorkspace::new(Some(dir), Some(&output)).unwrap();
+            let mut reopened = Headless::new(Session::new(Package::new("Empty")), Filesystem::Workspace(workspace));
+            reopened.load("published/saved.sbs").unwrap();
+            let helper_path = input.join("parts/finish.sbs").canonicalize().unwrap().to_string_lossy().into_owned();
+            assert!(reopened.session.pkg.dependencies.contains_key(&helper_path));
+            assert!(reopened.session.pkg.dependencies.values().any(|dependency| dependency.name == "Helpers"));
+            app.save(Some("new/sub/saved.sbs")).unwrap();
+            let xml = std::fs::read_to_string(output.join("new/sub/saved.sbs")).unwrap();
+            assert!(xml.contains("../../../input/parts/finish.sbs"), "{xml}");
+            reopened.load("published/new/sub/saved.sbs").unwrap();
+            assert!(reopened.session.pkg.dependencies.contains_key(&helper_path));
+            #[cfg(unix)]
+            {
+                std::fs::create_dir_all(output.join("nested/deep")).unwrap();
+                std::os::unix::fs::symlink("nested/deep", output.join("alias")).unwrap();
+                app.save(Some("alias/new/linked.sbs")).unwrap();
+                let xml = std::fs::read_to_string(output.join("nested/deep/new/linked.sbs")).unwrap();
+                assert!(xml.contains("../../../../input/parts/finish.sbs"), "{xml}");
+                reopened.load("published/nested/deep/new/linked.sbs").unwrap();
+                assert!(reopened.session.pkg.dependencies.values().any(|dependency| dependency.name == "Helpers"));
+            }
+        } else {
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("the instanced graph does not exist"), "{error}");
+            let outside = dir.join("outside.sbs").canonicalize().unwrap().to_string_lossy().into_owned();
+            assert!(!app.session.pkg.dependencies.contains_key(&outside));
+            assert!(!app.session.pkg.dependencies.values().any(|dependency| dependency.name == "Helpers"));
+            assert!(!output.join("missing.sbs.mcmat").exists());
+        }
+    }
 }

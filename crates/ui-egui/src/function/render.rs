@@ -55,7 +55,7 @@ pub(super) fn paint(app: &mut MaterialCraftApp, editor: &mut FunctionEditor, ui:
     }
 
     let mut camera = crate::graph::GraphCamera { origin: canvas_bounds.min, pan: editor.pan, zoom: editor.zoom };
-    camera.zoom_from_input(ui, canvas_bounds);
+    camera.zoom_from_input(ui, canvas_bounds, app.ui.prefs.zoom_direction());
     editor.pan = camera.pan;
     editor.zoom = camera.zoom;
 

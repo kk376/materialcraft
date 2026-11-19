@@ -41,8 +41,13 @@ impl GraphView {
         self.cancel_drag();
         self.framed_graph = None;
     }
+
     pub(crate) fn is_dragging(&self) -> bool {
         self.drag.is_some()
+    }
+
+    pub(crate) fn search_is_open(&self) -> bool {
+        self.search.is_some()
     }
 }
 

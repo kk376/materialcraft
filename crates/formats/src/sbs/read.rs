@@ -15,7 +15,12 @@ pub fn read_sbs(bytes: &[u8], name: &str, linked: &dyn Fn(&str) -> Option<Vec<u8
     super::SbsDocument::parse(bytes)?.read(name, linked)
 }
 
-pub(super) fn read_document(doc: &roxmltree::Document<'_>, name: &str, linked: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<SbsRead> {
+pub(super) fn read_document(
+    doc: &roxmltree::Document<'_>,
+    name: &str,
+    linked: &dyn Fn(&str) -> Option<Vec<u8>>,
+    resource_budget: Option<&std::cell::Cell<u64>>,
+) -> Result<SbsRead> {
     let text = doc.input_text();
     let root = doc.root_element();
 
@@ -28,7 +33,11 @@ pub(super) fn read_document(doc: &roxmltree::Document<'_>, name: &str, linked: &
         _ => "Untitled package".to_string(),
     };
 
+    // Include one probe byte so a valid inline asset can use the exact retained limit
+    let inflation_work = std::cell::Cell::new(resource_budget.map_or(0, |budget| budget.get().saturating_add(1)));
     let mut reader = SbsReader {
+        inflation_work,
+        resource_budget,
         text,
         warnings: &mut warnings,
         dependencies: HashMap::new(),

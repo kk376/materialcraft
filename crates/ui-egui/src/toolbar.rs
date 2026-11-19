@@ -41,7 +41,11 @@ pub fn status_bar(app: &mut MaterialCraftApp, ui: &mut Ui) {
     egui::Panel::bottom("status_bar").exact_size(22.0).frame(egui::Frame::NONE.fill(tk.chrome).inner_margin(egui::Margin::symmetric(8, 0))).show(ui, |ui| {
         ui.horizontal_centered(|ui| {
             let busy = app.cooker.busy();
-            if busy {
+            if app.cooker.suspended {
+                ui.label(
+                    RichText::new(tr("Engine suspended: choose Suspend engine in the Tools menu again (Shift+Escape) to resume")).size(11.0).color(tk.warning),
+                );
+            } else if busy {
                 ui.add(egui::Spinner::new().size(12.0));
                 ui.label(RichText::new(tr("Computing...")).size(11.0).color(tk.text_dim));
             } else if !app.status.is_empty() {

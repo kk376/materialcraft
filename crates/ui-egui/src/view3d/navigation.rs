@@ -56,7 +56,7 @@ pub(super) fn handle(app: &mut MaterialCraftApp, ui: &Ui, response: &Response, a
     }
 
     if response.hovered() {
-        let scroll = ui.input(|input| input.smooth_scroll_delta.y);
+        let scroll = app.ui.prefs.zoom_direction() * ui.input(|input| input.smooth_scroll_delta.y);
         if scroll.abs() > 0.0 {
             // One notch of a mouse wheel scrolls one line
             let points_per_notch = ui.ctx().options(|options| options.input_options.line_scroll_speed).max(1.0);

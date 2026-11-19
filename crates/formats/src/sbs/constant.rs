@@ -1,8 +1,8 @@
 pub(super) const MAX_XML_NODES: u32 = 8_000_000;
 
-pub(super) const MAX_GRAPHS: usize = 4096;
+pub(crate) const MAX_GRAPHS: usize = 4096;
 
-pub(super) const MAX_NODES: usize = 100_000;
+pub(crate) const MAX_NODES: usize = 100_000;
 
 pub(super) const UPDATER_VERSION: &str = env!("CARGO_PKG_VERSION");
 

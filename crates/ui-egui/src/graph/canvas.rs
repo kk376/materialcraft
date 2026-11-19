@@ -66,7 +66,7 @@ fn canvas(app: &mut MaterialCraftApp, ui: &mut Ui) {
     // Background and grid
     painter.rect_filled(rect, 0.0, Color32::from_rgb(0x2b, 0x2d, 0x31));
     let mut camera = GraphCamera { origin: rect.min, pan: Vec2::from(app.ui.graph_camera.pan), zoom: app.ui.graph_camera.zoom };
-    camera.zoom_from_input(ui, rect);
+    camera.zoom_from_input(ui, rect, app.ui.prefs.zoom_direction());
     app.ui.graph_camera = camera.state();
     super::grid::paint(&painter, &camera, rect);
     let pointer = context.input(|input| input.pointer.hover_pos());

@@ -1,7 +1,7 @@
 use crate::{Cache, Cooked, Options, now_ms};
 use crate::{node_execution::cook_node, prepared_graph::PreparedGraph};
 use craft_texture::Image;
-use materialcraft_core::{Package, Value};
+use materialcraft_core::{Graph, Node, Package, Value};
 use std::{
     collections::BTreeMap,
     sync::{Mutex, atomic::Ordering},
@@ -12,23 +12,7 @@ pub fn cook(package: &Package, graph_index: usize, options: &Options, cache: &Mu
     let mut cooked = Cooked::default();
     let Some(graph) = package.graphs.get(graph_index) else { return cooked };
 
-    // Input nodes show their bound preview images; the caller's images win
-    let bound;
-    let options = if !graph.input_images.is_empty() {
-        let mut inputs: BTreeMap<String, Image> = graph
-            .input_images
-            .iter()
-            .filter_map(|(id, resource)| {
-                Some((id.clone(), (options.resource)(&craft_texture::resource_key(resource, graph.input_images_linear.contains(id)))?))
-            })
-            .collect();
-        inputs.extend(options.inputs.iter().map(|(name, value)| (name.clone(), value.clone())));
-        bound = Options { only: options.only.clone(), inputs, overrides: options.overrides.clone(), graph_stack: options.graph_stack.clone(), ..*options };
-        &bound
-    } else {
-        options
-    };
-
+    let mut previews = BTreeMap::new();
     let prepared = PreparedGraph::new(package, graph, options);
 
     // Exposed parameter values: the graph's own, then the caller's overrides
@@ -50,9 +34,28 @@ pub fn cook(package: &Package, graph_index: usize, options: &Options, cache: &Mu
 
         let Some(node) = prepared.index.node(id) else { continue };
 
-        let result = cook_node(package, graph_index, &prepared, node, &cooked, &variables, options, cache);
+        let input = input_image(graph, node, options, &mut previews);
+        let result = cook_node(package, graph_index, &prepared, node, &cooked, &variables, options, input, cache);
         cooked.nodes.insert(id, result);
     }
+
     cooked.ms = (now_ms() - started_ms) as f32;
     cooked
+}
+
+fn input_image<'a>(graph: &Graph, node: &Node, options: &'a Options<'_>, previews: &'a mut BTreeMap<String, Option<Image>>) -> Option<&'a Image> {
+    if !node.def.starts_with("input_") {
+        return None;
+    }
+
+    let identifier = crate::identifier(node);
+    if let Some(image) = options.inputs.get(&identifier) {
+        return Some(image);
+    }
+
+    let resource = graph.input_images.get(&identifier)?;
+    let linear = graph.input_images_linear.contains(&identifier);
+
+    // Nodes sharing an input also share its first lookup, including a missing preview
+    previews.entry(identifier).or_insert_with(|| (options.resource)(&craft_texture::resource_key(resource, linear))).as_ref()
 }

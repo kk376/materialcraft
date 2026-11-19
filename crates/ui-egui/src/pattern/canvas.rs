@@ -87,7 +87,7 @@ fn paint(app: &mut MaterialCraftApp, editor: &mut PatternEditor, ui: &mut Ui) ->
     }
 
     let mut camera = GraphCamera { origin: bounds.min, pan: editor.pan, zoom: editor.zoom };
-    camera.zoom_from_input(ui, bounds);
+    camera.zoom_from_input(ui, bounds, app.ui.prefs.zoom_direction());
     editor.pan = camera.pan;
     editor.zoom = camera.zoom;
     crate::graph::grid::paint(&painter, &camera, bounds);

@@ -87,12 +87,14 @@ pub(crate) const EXPLORER_GRAPH: &[ExplorerRow] = &[
 /// The menu catalog (the target menu tree with our ids)
 pub const CATALOG: &[MenuItem] = &[
     sub("File", "New", "Graph...", "ui.newGraph", Some("Ctrl+N")),
-    sub("File", "New", "Function Graph...", "ui.newFunctionGraph", None),
+    sub("File", "New", "Function graph", "ui.newFunctionGraph", None),
     sub("File", "New", "Empty package", "file.newPackage", None),
     it("File", "Open...", "file.open", Some("Ctrl+O")),
     sep("File"),
     it("File", "Save", "file.save", Some("Ctrl+S")),
     it("File", "Save as...", "file.saveAs", Some("Ctrl+Shift+S")),
+    #[cfg(not(target_arch = "wasm32"))]
+    it("File", "Save all", "file.saveAll", None),
     it("File", "Close all", "ui.closeAll", None),
     sep("File"),
     it("File", "Import bitmap...", "file.importBitmap", None),
@@ -100,6 +102,7 @@ pub const CATALOG: &[MenuItem] = &[
     it("File", "Export outputs...", "ui.export", Some("Ctrl+Shift+E")),
     it("File", "Export material...", "file.exportMaterial", None),
     it("File", "Send to TextureCraft", "file.sendToTextureCraft", None),
+    sep("File"),
     it("File", "Reload resources", "ui.reloadResources", None),
     sep("File"),
     it("File", "Exit", "ui.quit", Some("Ctrl+Q")),
@@ -117,6 +120,9 @@ pub const CATALOG: &[MenuItem] = &[
     it("Edit", "Parent graph", "ui.graph.parent", Some("Alt+ArrowLeft")),
     sep("Edit"),
     it("Edit", "Preferences...", "ui.preferences", None),
+    it("Tools", "Cancel rendering", "ui.cook.cancel", Some("Escape")),
+    it("Tools", "Suspend engine", "ui.cook.suspend", Some("Shift+Escape")),
+    sep("Tools"),
     it("Tools", "Compute graph", "graph.cook", None),
     it("Tools", "Snap to grid", "ui.graph.snapToGrid", None),
     it("Tools", "Compute nodes thumbnails", "ui.graph.computeThumbnails", None),
@@ -132,6 +138,10 @@ pub const CATALOG: &[MenuItem] = &[
     sub("Tools", "Preview size", "2048 px", "ui.preview.2048", None),
     sub("Tools", "Preview size", "Full size", "ui.preview.0", None),
     it("Tools", "Create graph from selection", "graph.createFromSelection", None),
+    sep("Tools"),
+    it("Tools", "Plugin Manager...", "ui.pluginManager", None),
+    it("Windows", "Reset layout", "ui.resetLayout", None),
+    sep("Windows"),
     it("Windows", "Explorer", "ui.view.explorer", None),
     it("Windows", "Graph", "ui.view.graph", None),
     it("Windows", "Properties", "ui.view.properties", None),
@@ -141,14 +151,26 @@ pub const CATALOG: &[MenuItem] = &[
     it("Windows", "Library", "ui.view.library", None),
     it("Windows", "History", "ui.view.history", None),
     sep("Windows"),
-    it("Windows", "Reset layout", "ui.resetLayout", None),
-    it("Help", "Home screen...", "ui.home", None),
+    it("Windows", "Main toolbar", "ui.view.toolbar", None),
+    it("Help", "Tutorials...", "ui.help.tutorials", None),
+    it("Help", "Release notes...", "ui.help.releaseNotes", None),
+    it("Help", "Technical requirements...", "ui.help.requirements", None),
     it("Help", "Documentation...", "ui.help.docs", None),
+    it("Help", "Automation documentation...", "ui.help.automation", None),
     it("Help", "Shortcuts list...", "ui.help.shortcuts", None),
     sep("Help"),
-    it("Help", "Join the community (Discord)...", "ui.help.discord", None),
-    it("Help", "ArtCraft website...", "ui.help.website", None),
+    it("Help", "Community (Discord)...", "ui.help.discord", None),
     it("Help", "Report a bug...", "ui.help.bug", None),
+    #[cfg(not(target_arch = "wasm32"))]
+    it("Help", "Export log...", "ui.help.exportLog", None),
+    it("Help", "Give feedback...", "ui.help.feedback", None),
+    it("Help", "Troubleshooting...", "ui.help.troubleshooting", None),
+    sep("Help"),
+    it("Help", "All Craft apps...", "ui.help.apps", None),
+    it("Help", "ArtCraft website...", "ui.help.website", None),
+    sep("Help"),
+    it("Help", "Home screen...", "ui.home", None),
+    it("Help", "What's new...", "ui.help.news", None),
     sep("Help"),
     #[cfg(not(target_arch = "wasm32"))]
     it("Help", "Check for updates...", "ui.help.checkForUpdates", None),
@@ -173,6 +195,14 @@ pub fn enabled(app: &MaterialCraftApp, id: &str) -> bool {
         return enabled;
     }
 
+    if id == "ui.cook.cancel" {
+        return app.cooker.busy();
+    }
+
+    if id == "graph.cook" && app.cooker.suspended {
+        return false;
+    }
+
     if matches!(id, "edit.paste" | "edit.pasteWithoutLinks") {
         return app.session.graph().is_ok() && app.session.clipboard.as_ref().is_some_and(|clip| !clip.nodes.is_empty());
     }
@@ -180,6 +210,7 @@ pub fn enabled(app: &MaterialCraftApp, id: &str) -> bool {
     if is_ui(id) {
         return true;
     }
+
     materialcraft_engine::find(id).is_some_and(|c| (c.enabled)(&app.session).is_ok())
 }
 
@@ -206,17 +237,16 @@ pub fn invoke(app: &mut MaterialCraftApp, ctx: &egui::Context, id: &str) {
         app.ui.dock.toggle(panel);
         return;
     }
+
     if let Some(size) = id.strip_prefix("ui.preview.").and_then(|s| s.parse::<u32>().ok()) {
         app.ui.prefs.preview_size = size;
         app.apply_prefs();
         return;
     }
+
     match id {
-        "ui.newGraph" | "ui.newFunctionGraph" => {
-            app.ui.new_graph_kind =
-                if id == "ui.newFunctionGraph" { materialcraft_engine::core::GraphKind::Function } else { materialcraft_engine::core::GraphKind::Material };
-            app.ui.windows.new_graph = true;
-        }
+        "ui.newGraph" => crate::new_graph_dialog::open(app, materialcraft_engine::core::GraphKind::Material),
+        "ui.newFunctionGraph" => crate::new_graph_dialog::open(app, materialcraft_engine::core::GraphKind::Function),
         "ui.export" => crate::export::open(app, crate::export::ExportTab::FromGraph),
         "ui.quit" => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         "ui.preferences" => app.ui.windows.preferences = true,
@@ -237,14 +267,23 @@ pub fn invoke(app: &mut MaterialCraftApp, ctx: &egui::Context, id: &str) {
         "ui.about" => app.ui.windows.about = true,
         #[cfg(not(target_arch = "wasm32"))]
         "ui.help.checkForUpdates" => crate::updates_ui::check(app),
-        "ui.help.discord" => ctx.open_url(egui::OpenUrl::new_tab("https://discord.gg/artcraft")),
-        "ui.help.website" => ctx.open_url(egui::OpenUrl::new_tab("https://getartcraft.com/apps/materialcraft")),
-        "ui.help.docs" => ctx.open_url(egui::OpenUrl::new_tab("https://github.com/storytold/materialcraft#readme")),
-        "ui.help.bug" => ctx.open_url(egui::OpenUrl::new_tab("https://github.com/storytold/materialcraft/issues")),
+        "ui.cook.cancel" => crate::cook::cancel(app),
+        "ui.cook.suspend" => crate::cook::toggle_suspended(app),
+        "graph.cook" if app.cooker.suspended => {}
+        "ui.pluginManager" => app.ui.windows.plugin_manager = true,
+        "ui.view.toolbar" => app.ui.prefs.show_toolbar = !app.ui.prefs.show_toolbar,
+        #[cfg(not(target_arch = "wasm32"))]
+        "ui.help.exportLog" => crate::native_dialogs::export_log(app),
         _ => {
+            if let Some(url) = crate::help_links::url(id) {
+                ctx.open_url(egui::OpenUrl::new_tab(url));
+                return;
+            }
+
             if crate::windows::file_action(app, ctx, id) {
                 return;
             }
+
             app.run(id, Value::Null);
         }
     }
@@ -363,6 +402,8 @@ fn menu_item(app: &mut MaterialCraftApp, context: &egui::Context, ui: &mut egui:
     let checked = match item.id {
         "ui.view.graph" => Some(true),
         "ui.graph.snapToGrid" => Some(app.ui.prefs.snap_to_grid),
+        "ui.cook.suspend" => Some(app.cooker.suspended),
+        "ui.view.toolbar" => Some(app.ui.prefs.show_toolbar),
         id if id.starts_with("ui.preview.") => {
             id.strip_prefix("ui.preview.").and_then(|size| size.parse::<u32>().ok()).map(|size| size == app.ui.prefs.preview_size)
         }
@@ -418,6 +459,7 @@ pub fn shortcuts(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     if ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx) {
         return;
     }
+
     // The desktop sends Copy, Cut and Paste events in place of their key presses
     if !ctx
         .input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. } | egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_))))
@@ -429,6 +471,7 @@ pub fn shortcuts(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     if !modality.is_blocked() && crate::explorer::shortcuts(app, ctx) {
         return;
     }
+
     if !modality.is_blocked() {
         crate::graph::wire_actions::shortcuts(app, ctx);
     }
@@ -437,14 +480,21 @@ pub fn shortcuts(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     if app.keymap.platform() != platform {
         app.keymap = keymap(platform);
     }
-    // Selected label text copies through egui's Copy and Cut events, which a hit would remove
+
+    // Keep egui's copy, cut, and Escape events while label text is selected
     let label_selected = label_text_selected(ctx);
+
     // A clipboard chord with nothing to copy or paste leaves its event to egui instead of reporting an error
     let unavailable_clipboard_commands: Vec<&str> = ["edit.copy", "edit.cut", "edit.paste"].into_iter().filter(|id| !enabled(app, id)).collect();
+
+    // A drag in progress keeps Escape so the gesture can cancel itself
+    let gesture_in_progress = ctx.input(|i| i.pointer.any_down());
+    let node_search_open = app.graph.search_is_open() || app.function_editor.as_ref().is_some_and(|editor| editor.search.is_some());
     let hits = ctx.input_mut(|i| {
         app.dispatcher.dispatch_filtered(i, &app.keymap, &Active::NONE, |hit| {
             let id = hit.command.id.as_str();
-            modality.allows(id) && !(label_selected && matches!(id, "edit.copy" | "edit.cut")) && !unavailable_clipboard_commands.contains(&id)
+            let keeps_escape = id == "ui.cook.cancel" && (!app.cooker.busy() || gesture_in_progress || node_search_open || label_selected);
+            modality.allows(id) && !(label_selected && matches!(id, "edit.copy" | "edit.cut")) && !unavailable_clipboard_commands.contains(&id) && !keeps_escape
         })
     });
     for hit in hits {

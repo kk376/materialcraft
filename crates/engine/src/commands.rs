@@ -64,6 +64,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(crate::node_info_commands::specs());
         v.extend(crate::atomic_sample_commands::specs());
         v.extend(crate::material_cmds::specs());
+        v.extend(crate::material_bake::specs());
         v.extend(crate::edit_cmds::specs());
         v.extend(crate::document_history_commands::specs());
         v.extend(crate::library_cache_commands::specs());
@@ -89,6 +90,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(crate::view_cmds::specs());
         v.extend(crate::display_cmds::specs());
         v.extend(crate::view3d_commands::specs());
+        v.extend(crate::save_all_commands::specs());
         v.extend(crate::material_preview_commands::specs());
         v.extend(crate::wire_cmds::specs());
         v

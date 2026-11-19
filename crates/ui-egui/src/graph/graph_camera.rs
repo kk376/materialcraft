@@ -31,7 +31,11 @@ impl GraphCamera {
         Self { origin: view.min, pan, zoom }
     }
 
-    pub(crate) fn zoom_from_input(&mut self, ui: &Ui, view: Rect) {
+    /// Zoom around the pointer by the wheel or a pinch. `zoom_direction` is -1 for inverted zoom.
+    pub(crate) fn zoom_from_input(&mut self, ui: &Ui, view: Rect, zoom_direction: f32) {
+        const PINCH_TO_SCROLL_POINTS: f32 = 200.0;
+        const ZOOM_PER_SCROLL_POINT: f32 = 0.0025;
+
         self.zoom = self.zoom.clamp(crate::state::GraphCamera::ZOOM.0, crate::state::GraphCamera::ZOOM.1);
         if !ui.rect_contains_pointer(view) {
             return;
@@ -39,10 +43,10 @@ impl GraphCamera {
 
         let Some(pointer) = ui.input(|input| input.pointer.hover_pos()).filter(|pointer| view.contains(*pointer)) else { return };
 
-        let scroll = ui.input(|input| input.smooth_scroll_delta.y + input.zoom_delta().ln() * 200.0);
+        let scroll = zoom_direction * ui.input(|input| input.smooth_scroll_delta.y + input.zoom_delta().ln() * PINCH_TO_SCROLL_POINTS);
         if scroll.is_finite() && scroll != 0.0 {
             let before = self.to_graph(pointer);
-            self.zoom = (self.zoom * (scroll * 0.0025).exp()).clamp(crate::state::GraphCamera::ZOOM.0, crate::state::GraphCamera::ZOOM.1);
+            self.zoom = (self.zoom * (scroll * ZOOM_PER_SCROLL_POINT).exp()).clamp(crate::state::GraphCamera::ZOOM.0, crate::state::GraphCamera::ZOOM.1);
             self.pan = before.to_vec2() - (pointer - self.origin) / self.zoom;
         }
     }

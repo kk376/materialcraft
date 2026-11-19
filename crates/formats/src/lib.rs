@@ -23,7 +23,6 @@ pub(crate) use guard::guard;
 pub use image::{decode, encode};
 
 pub type Result<T> = std::result::Result<T, FormatError>;
-pub(crate) const MAX_JSON: u64 = 64 << 20;
 pub(crate) const MAX_RESOURCE: u64 = 256 << 20;
 pub const EXPORT_FORMATS: &[(&str, &str)] =
     &[("png", "PNG"), ("jpg", "JPEG"), ("tga", "TGA"), ("bmp", "BMP"), ("webp", "WEBP"), ("exr", "OpenEXR"), ("hdr", "Radiance HDR")];

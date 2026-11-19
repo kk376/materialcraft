@@ -264,20 +264,12 @@ fn handle_inner(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p
             if matches!(id, "view.3d.saveRender" | "view.3d.exportGeometry" | "view.2d.copyImage") {
                 return displayed_command(app, ctx, id, &params);
             }
+
             match crate::cook::guard("command request", || {
                 Ok(materialcraft_engine::commands::execute_request(&mut app.session, id, &params).map_err(|error| error.to_string()))
             }) {
                 Ok(Ok(v)) => {
-                    if id == "view.previewSize" {
-                        app.ui.prefs.preview_size = app.session.preview_size.unwrap_or(0);
-                    }
-                    if id == "library.cache.configure" {
-                        app.ui.prefs.library_cache = app.session.library_cache_prefs;
-                    }
-                    if id == "session.history" {
-                        app.ui.prefs.history = app.session.history_prefs;
-                    }
-
+                    app.sync_preferences_after_command(id);
                     app.close_subgraph_after(id);
                     ok(v)
                 }

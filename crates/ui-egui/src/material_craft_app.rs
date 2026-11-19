@@ -15,6 +15,7 @@ pub struct MaterialCraftApp {
     pub cooker: cook::Cooker,
     /// Node output thumbnails and library previews
     pub thumbs: thumbs::Thumbs,
+    pub(crate) template_previews: windows::TemplatePreviews,
     /// The graph editor's gesture state
     pub graph: graph::GraphView,
     pub view3d: view3d::View3dState,
@@ -42,6 +43,10 @@ pub struct MaterialCraftApp {
     last_time: f64,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     next_autosave: f64,
+    #[cfg(not(target_arch = "wasm32"))]
+    autosave_workspace: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    autosave_worker: Option<std::thread::JoinHandle<()>>,
     styled: Option<(theme::Brightness, theme::Accent)>,
     /// Release checks and the update prompt (desktop only)
     #[cfg(not(target_arch = "wasm32"))]
@@ -49,6 +54,8 @@ pub struct MaterialCraftApp {
     /// Native file dialogs (desktop only)
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) dialogs: crate::native_dialogs::Dialogs,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) material_export_job: Option<std::sync::mpsc::Receiver<Result<Value, String>>>,
     /// The held action waiting for the Save dialog the unsaved-changes prompt opened
     pub(crate) awaiting_save: Option<crate::unsaved::Guarded>,
     /// The window buttons to draw when the app draws the window frame; `None` while the desktop draws it (desktop only)
@@ -95,6 +102,7 @@ impl MaterialCraftApp {
             toasts: Vec::new(),
             cooker: cook::Cooker::default(),
             thumbs: thumbs::Thumbs::default(),
+            template_previews: windows::TemplatePreviews::default(),
             graph: graph::GraphView::default(),
             view3d: view3d::View3dState::default(),
             view2d: view2d::View2dState::default(),
@@ -115,15 +123,22 @@ impl MaterialCraftApp {
             quit_confirmed: false,
             last_time: 0.0,
             next_autosave,
+            #[cfg(not(target_arch = "wasm32"))]
+            autosave_workspace: std::hash::BuildHasher::hash_one(&std::hash::RandomState::new(), ()),
+            #[cfg(not(target_arch = "wasm32"))]
+            autosave_worker: None,
             styled: None,
             #[cfg(not(target_arch = "wasm32"))]
             updates_rt: crate::updates_ui::Runtime::default(),
             #[cfg(not(target_arch = "wasm32"))]
             dialogs: crate::native_dialogs::unattached(),
+            #[cfg(not(target_arch = "wasm32"))]
+            material_export_job: None,
             awaiting_save: None,
             #[cfg(not(target_arch = "wasm32"))]
             window_layout: None,
             keymap: menus::keymap(craft_keymap::Platform::current()),
+
             // Accept clipboard events without duplicating web key commands
             dispatcher: craft_keymap::egui::Dispatcher::new().with_repeat(true).with_clipboard_events(true),
             system_clipboard: None,
@@ -146,21 +161,28 @@ impl MaterialCraftApp {
     /// Push application preferences into the session
     pub fn apply_prefs(&mut self) {
         self.ui.prefs.library_cache = self.ui.prefs.library_cache.sanitized();
-        if self.session.library_cache_prefs != self.ui.prefs.library_cache {
-            let _ = materialcraft_engine::execute(&mut self.session, "library.cache.configure", &serde_json::json!(self.ui.prefs.library_cache));
+        let library_cache = self.ui.committed_prefs().library_cache.sanitized();
+        if self.session.library_cache_prefs != library_cache {
+            let _ = materialcraft_engine::execute(&mut self.session, "library.cache.configure", &serde_json::json!(library_cache));
         }
-        self.thumbs.configure_cache(self.ui.prefs.library_cache, self.session.library_cache_clear_epoch);
+        self.thumbs.configure_cache(library_cache, self.session.library_cache_clear_epoch);
+
         self.ui.prefs.history = self.ui.prefs.history.sanitized();
-        if self.session.history_prefs != self.ui.prefs.history {
-            let _ = materialcraft_engine::execute(&mut self.session, "session.history", &serde_json::json!(self.ui.prefs.history));
+        let history = self.ui.committed_prefs().history.sanitized();
+        if self.session.history_prefs != history {
+            let _ = materialcraft_engine::execute(&mut self.session, "session.history", &serde_json::json!(history));
         }
 
-        if self.session.camera != self.ui.prefs.camera.sanitized() {
-            self.session.set_camera_prefs(self.ui.prefs.camera);
+        self.ui.recent.truncate(self.ui.committed_prefs().recent_limit.clamp(1, crate::state::Prefs::MAX_RECENT));
+        self.session.view_outputs_on_open = self.ui.committed_prefs().view_outputs_on_open;
+
+        let camera = self.ui.committed_prefs().camera.sanitized();
+        if self.session.camera != camera {
+            self.session.set_camera_prefs(camera);
         }
 
-        // A saved default is a file like any other: its numbers are put in range before use
-        let default_view = self.ui.prefs.default_view3d.clone().map(|view| {
+        // Bound saved camera values before applying them
+        let default_view = self.ui.committed_prefs().default_view3d.clone().map(|view| {
             let mut view = view.sanitized();
             view.target = self.session.camera.clamp_target(view.target);
             view
@@ -168,9 +190,13 @@ impl MaterialCraftApp {
         if self.session.default_view3d != default_view {
             self.session.default_view3d = default_view;
         }
-        let p = if self.ui.prefs.preview_size == 0 { None } else { Some(self.ui.prefs.preview_size.clamp(64, 8192)) };
-        if self.session.preview_size != p {
-            let _ = materialcraft_engine::execute(&mut self.session, "view.previewSize", &serde_json::json!({"size": p.unwrap_or(0)}));
+
+        let preview_size = match self.ui.committed_prefs().preview_size {
+            0 => None,
+            size => Some(size.clamp(64, 8192)),
+        };
+        if self.session.preview_size != preview_size {
+            let _ = materialcraft_engine::execute(&mut self.session, "view.previewSize", &serde_json::json!({"size": preview_size.unwrap_or(0)}));
         }
     }
 
@@ -260,19 +286,7 @@ impl MaterialCraftApp {
                     self.ui.dock.focus(docking::Panel::Properties);
                 }
 
-                if id == "view.previewSize" {
-                    self.ui.prefs.preview_size = self.session.preview_size.unwrap_or(0);
-                }
-                if id == "view.3d.saveDefault" {
-                    self.ui.prefs.default_view3d = self.session.default_view3d.clone();
-                }
-                if id == "library.cache.configure" {
-                    self.ui.prefs.library_cache = self.session.library_cache_prefs;
-                }
-                if id == "session.history" {
-                    self.ui.prefs.history = self.session.history_prefs;
-                }
-
+                self.sync_preferences_after_command(id);
                 self.close_subgraph_after(id);
                 if id == "graph.node.function.edit"
                     && let Ok(target) = serde_json::from_value::<materialcraft_engine::FunctionGraphTarget>(v["target"].clone())
@@ -297,6 +311,39 @@ impl MaterialCraftApp {
                 self.toast(e.to_string(), true);
                 None
             }
+        }
+    }
+
+    /// Commands commit explicit preferences even while the window presents a draft
+    pub(crate) fn sync_preferences_after_command(&mut self, id: &str) {
+        let prefs = &mut self.ui.prefs;
+        let applied = self.ui.preferences.applied.as_mut();
+        match id {
+            "view.previewSize" => {
+                prefs.preview_size = self.session.preview_size.unwrap_or(0);
+                if let Some(applied) = applied {
+                    applied.preview_size = prefs.preview_size;
+                }
+            }
+            "view.3d.saveDefault" => {
+                prefs.default_view3d.clone_from(&self.session.default_view3d);
+                if let Some(applied) = applied {
+                    applied.default_view3d.clone_from(&prefs.default_view3d);
+                }
+            }
+            "library.cache.configure" => {
+                prefs.library_cache = self.session.library_cache_prefs;
+                if let Some(applied) = applied {
+                    applied.library_cache = prefs.library_cache;
+                }
+            }
+            "session.history" => {
+                prefs.history = self.session.history_prefs;
+                if let Some(applied) = applied {
+                    applied.history = prefs.history;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -348,44 +395,42 @@ impl MaterialCraftApp {
 
     pub fn toast(&mut self, text: impl Into<String>, error: bool) {
         let text = text.into();
-        self.status = text.clone();
         self.session.log(text.clone());
+        self.toast_only(text, error);
+    }
+
+    pub(crate) fn toast_only(&mut self, text: String, error: bool) {
+        self.status = text.clone();
         self.toasts.push(Toast { text, error, until: self.last_time + if error { 6.0 } else { 3.0 } });
     }
 
     /// Every `prefs.autosave_minutes`, write a modified package to the autosave folder
     #[cfg(not(target_arch = "wasm32"))]
     fn autosave(&mut self, now: f64) {
-        let period = self.ui.prefs.autosave_minutes as f64 * 60.0;
+        let preferences = self.ui.committed_prefs();
+        let period = f64::from(preferences.autosave_minutes) * 60.0;
         if period <= 0.0 || !self.session.modified {
             self.next_autosave = now + period;
             return;
         }
 
-        if now < self.next_autosave {
+        // A slow disk must not accumulate multiple package snapshots
+        if now < self.next_autosave || self.autosave_worker.as_ref().is_some_and(|worker| !worker.is_finished()) {
             return;
         }
 
         self.next_autosave = now + period;
-        let dir = user_dir("autosave");
-        let path = dir.join(format!("{}.mcraft", materialcraft_engine::formats::safe_file_name(&self.session.pkg.name)));
-        let pkg = self.session.pkg.clone();
-        let spawned = std::thread::Builder::new().name("materialcraft-autosave".into()).spawn(move || {
-            let result = std::fs::create_dir_all(&dir)
-                .map_err(|e| e.to_string())
-                .and_then(|_| {
-                    materialcraft_engine::formats::project::ProjectFiles::build(&pkg, "autosave.mcraft", true)
-                        .and_then(|files| files.zip())
-                        .map_err(|e| e.to_string())
-                })
-                .and_then(|bytes| materialcraft_engine::formats::write_atomic(&path, &bytes).map_err(|e| e.to_string()));
-            match result {
-                Ok(()) => log::info!("autosaved {}", path.display()),
-                Err(e) => log::warn!("autosave to {} failed: {e}", path.display()),
-            }
-        });
-        if let Err(e) = spawned {
-            log::warn!("could not start autosave: {e}");
+        let folder = crate::autosave_versions::folder(&user_dir("autosave"), self.session.path.as_deref(), self.autosave_workspace, self.session.document_id);
+        let package = self.session.pkg.clone();
+        let keep = preferences.autosave_versions.clamp(1, crate::state::Prefs::MAX_AUTOSAVE_VERSIONS);
+        let worker =
+            std::thread::Builder::new().name("materialcraft-autosave".into()).spawn(move || match crate::autosave_versions::save(&folder, &package, keep) {
+                Ok(()) => log::info!("Saved a recovery copy"),
+                Err(error) => log::warn!("Could not save a recovery copy ({:?})", error.kind()),
+            });
+        match worker {
+            Ok(worker) => self.autosave_worker = Some(worker),
+            Err(error) => log::warn!("Could not start autosave ({:?})", error.kind()),
         }
     }
 }
@@ -396,7 +441,13 @@ impl eframe::App for MaterialCraftApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if let Some(applied) = self.ui.preferences.applied.as_mut() {
+            std::mem::swap(applied, &mut self.ui.prefs);
+        }
         eframe::set_value(storage, "ui", &self.ui);
+        if let Some(applied) = self.ui.preferences.applied.as_mut() {
+            std::mem::swap(applied, &mut self.ui.prefs);
+        }
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
@@ -463,6 +514,8 @@ impl MaterialCraftApp {
         web_files::poll(self);
         #[cfg(not(target_arch = "wasm32"))]
         crate::native_dialogs::poll(self);
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::export::poll(self, ctx);
         if !crate::shell::modality::Modality::capture(self, ctx).is_blocked() {
             for f in ctx.input(|i| i.raw.dropped_files.clone()) {
                 web_files::dropped(self, ctx, &f);
@@ -505,7 +558,9 @@ impl MaterialCraftApp {
         // Tab can focus a menu or toolbar button while drawing; preserve keyboard ownership
         self.graph.keyboard_was_focused = ctx.egui_wants_keyboard_input();
         menus::menu_bar(self, ui);
-        toolbar::main_toolbar(self, ui);
+        if self.ui.prefs.show_toolbar {
+            toolbar::main_toolbar(self, ui);
+        }
         toolbar::status_bar(self, ui);
         self.ui.explorer.hovered = false;
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(theme::Tokens::get(&ctx).chrome)).show(ui, |ui| docking::show(self, ui));

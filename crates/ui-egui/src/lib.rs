@@ -12,13 +12,17 @@ pub mod function;
 pub mod fuzzy;
 pub mod graph;
 mod graph_drag_payload;
+mod help_links;
 mod history;
+mod home_screen;
 pub mod i18n;
 pub mod levels_editor;
 pub mod library;
 mod material_preview_menu;
 mod menu_item;
 pub mod menus;
+mod new_graph_dialog;
+mod node_shortcuts;
 mod preview_resolution;
 #[path = "property/mod.rs"]
 pub mod properties;
@@ -35,10 +39,16 @@ pub mod web_files;
 pub mod widgets;
 pub mod windows;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod autosave_versions;
 mod material_craft_app;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_dialogs;
 pub mod pattern;
+mod plugin_manager;
+#[path = "preference/mod.rs"]
+pub mod preferences;
+mod template_card;
 mod toast;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod updates_ui;

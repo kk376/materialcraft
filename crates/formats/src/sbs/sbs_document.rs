@@ -34,9 +34,14 @@ impl<'input> SbsDocument<'input> {
         super::library_layout::read_document(&self.document, uri)
     }
 
+    /// Apply one aggregate resource budget to inline data and the caller's linked reads.
+    pub(crate) fn read_with_resource_budget(&self, name: &str, linked: &dyn Fn(&str) -> Option<Vec<u8>>, budget: &std::cell::Cell<u64>) -> Result<SbsRead> {
+        super::read::read_document(&self.document, name, linked, Some(budget))
+    }
+
     /// Read owned package data; the result does not retain the XML document or input bytes.
     pub fn read(&self, name: &str, linked: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<SbsRead> {
-        super::read::read_document(&self.document, name, linked)
+        super::read::read_document(&self.document, name, linked, None)
     }
 }
 

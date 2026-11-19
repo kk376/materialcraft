@@ -458,3 +458,83 @@ fn input_usage_defaults_and_unknown_metadata_stay_unclassified() {
         }
     }
 }
+
+#[test]
+fn published_material_preserves_disabled_nodes_and_localized_typed_interfaces() {
+    use crate::material::{read_material, write_material};
+    use materialcraft_core::{GraphInstance, GraphPort, ValueType};
+
+    let mut helper = Graph::new("Helper");
+    let input = helper.add_node("input_grayscale", [0.0; 2]);
+    helper.node_mut(input).unwrap().params.insert("identifier".into(), Value::Text("gray".into()));
+    let out = helper.add_node("output", [0.0; 2]);
+    helper.node_mut(out).unwrap().params.insert("identifier".into(), Value::Text("result".into()));
+    helper.connect(input, "output", out, "input").unwrap();
+    let mut dependency = Package::new("Dependency");
+    dependency.graphs.push(helper);
+
+    let mut graph = Graph::new("Root");
+    let uniform = graph.add_node("uniform", [0.0; 2]);
+    let levels = graph.add_node("levels", [0.0; 2]);
+    graph.node_mut(levels).unwrap().disabled = true;
+    graph.connect(uniform, "output", levels, "input").unwrap();
+    let instance = graph.add_node("graph_instance", [0.0; 2]);
+    let inputs = vec![GraphPort { identifier: "gray".into(), type_code: 2 }, GraphPort { identifier: "unused<&".into(), type_code: ValueType::Float as u32 }];
+    graph.node_mut(instance).unwrap().instance = Some(GraphInstance {
+        package: "dependency.sbs".into(),
+        graph: "Helper".into(),
+        inputs: inputs.clone(),
+        outputs: vec![GraphPort { identifier: "result".into(), type_code: 2 }],
+        defaults: Default::default(),
+        label: String::new(),
+    });
+    graph.connect(levels, "output", instance, "gray").unwrap();
+    let out = graph.add_node("output", [0.0; 2]);
+    graph.connect(instance, "result", out, "input").unwrap();
+    let mut package = Package::new("Package");
+    package.graphs.push(graph);
+    package.dependencies.insert("dependency.sbs".into(), std::sync::Arc::new(dependency));
+
+    let bytes = write_material(&package, 0).unwrap();
+    let (opened, entry) = read_material(&bytes).unwrap();
+    let graph = &opened.graphs[entry];
+    assert!(graph.nodes.iter().find(|node| node.def == "levels").unwrap().disabled);
+    assert!(!graph.nodes.iter().find(|node| node.def == "uniform").unwrap().disabled);
+    let node = graph.nodes.iter().find(|node| node.def == "graph_instance").unwrap();
+    let restored = node.instance.as_ref().expect("localization must retain the typed interface");
+    assert!(restored.package.is_empty());
+    assert_eq!(restored.inputs, inputs);
+    assert_eq!(restored.outputs, vec![GraphPort { identifier: "result".into(), type_code: 2 }]);
+    assert!(opened.graph_by_name(&restored.graph).is_some());
+    assert!(graph.connections.iter().any(|wire| wire.to == node.id && wire.to_port == "gray"));
+
+    // Republish the already-localized graph to exercise local interfaces
+    let bytes = write_material(&opened, entry).unwrap();
+    let (reopened, entry) = read_material(&bytes).unwrap();
+    assert_eq!(reopened.graphs[entry].nodes.iter().find_map(|node| node.instance.as_ref()).unwrap().inputs, inputs);
+    assert!(reopened.graphs[entry].nodes.iter().find(|node| node.def == "levels").unwrap().disabled);
+}
+
+#[test]
+fn inferred_instance_inputs_respect_the_typed_interface_limit() {
+    use materialcraft_core::{GraphInstance, GraphPort};
+
+    let mut package = Package::new("Package");
+    let mut root = Graph::new("Root");
+    let source = root.add_node("uniform", [0.0; 2]);
+    let instance = root.add_node("graph_instance", [0.0; 2]);
+    let inputs = (0..4096).map(|index| GraphPort { identifier: format!("input{index}"), type_code: 1 }).collect();
+    root.node_mut(instance).unwrap().instance =
+        Some(GraphInstance { label: String::new(), package: String::new(), graph: "Helper".into(), inputs, outputs: Vec::new(), defaults: Default::default() });
+    root.connect(source, "output", instance, "input0").unwrap();
+    package.graphs.extend([root, Graph::new("Helper")]);
+    let xml = String::from_utf8(write_sbs(&package).unwrap()).unwrap();
+    let xml = xml.replace("<connection><identifier v=\"input0\"", "<connection><identifier v=\"inferred\"");
+
+    let restored = read_sbs(xml.as_bytes(), "instance.sbs", &no_linked_files).unwrap();
+
+    let root = &restored.pkg.graphs[0];
+    assert_eq!(root.instances().next().unwrap().inputs.len(), 4096);
+    assert!(root.connections.is_empty());
+    assert!(restored.warnings.iter().any(|warning| warning.contains("4096-input")));
+}

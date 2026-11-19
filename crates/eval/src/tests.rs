@@ -48,6 +48,111 @@ fn cooks_and_caches() {
 }
 
 #[test]
+fn material_overrides_skip_bound_preview_decodes_and_release_buffers() {
+    let mut graph = Graph::new("Bound inputs");
+    graph.size = [4; 2];
+    let identifiers = ["height", "curvature", "thickness"];
+    let mut outputs = Vec::new();
+    for identifier in identifiers {
+        let input = graph.add_node("input_grayscale", [0.0; 2]);
+        graph.node_mut(input).unwrap().params.insert("identifier".into(), Value::Text(identifier.into()));
+        let output = graph.add_node("output", [0.0; 2]);
+        graph.connect(input, "output", output, "input").unwrap();
+        graph.input_images.insert(identifier.into(), format!("preview_{identifier}"));
+        outputs.push(output);
+    }
+    let mut package = Package::new("Bound inputs");
+    package.graphs.push(graph);
+    let preview_buffers = Mutex::new(Vec::new());
+    let read_preview = |_: &str| {
+        let image = Image::filled(1024, 1024, Kind::Gray, [0.25; 4]);
+        preview_buffers.lock().unwrap().push(std::sync::Arc::downgrade(image.shared_data()));
+        Some(image)
+    };
+    let cache = Mutex::new(Cache::new(0));
+
+    for value in [0.125, 0.5, 0.875] {
+        let mut options = Options::new(&read_preview);
+        let mut supplied_buffers = Vec::new();
+        for identifier in &identifiers[..2] {
+            let image = Image::filled(16, 16, Kind::Gray, [value; 4]);
+            supplied_buffers.push(std::sync::Arc::downgrade(image.shared_data()));
+            options.inputs.insert((*identifier).into(), image);
+        }
+
+        let result = cook(&package, 0, &options, &cache);
+        for (output, expected) in outputs.iter().zip([value, value, 0.25]) {
+            let image = result.image(*output, 0).unwrap();
+            assert!((image.mean()[0] - expected).abs() < 0.005);
+        }
+        drop(result);
+        drop(options);
+
+        assert!(supplied_buffers.iter().all(|buffer| buffer.upgrade().is_none()));
+    }
+
+    let previews = preview_buffers.into_inner().unwrap();
+    assert!(previews.iter().all(|buffer| buffer.upgrade().is_none()));
+    eprintln!("Decoded preview planes: {} ({} bytes of grayscale payload)", previews.len(), previews.len() * 1024 * 1024 * size_of::<f32>());
+    assert_eq!(previews.len(), 3, "one fallback preview decode per cook");
+}
+
+#[test]
+fn selected_outputs_decode_only_reachable_input_previews() {
+    let mut graph = Graph::new("Preview selection");
+    graph.size = [4; 2];
+    let mut outputs = Vec::new();
+    for identifier in ["height", "roughness", "normal", "height"] {
+        let input = graph.add_node("input_grayscale", [0.0; 2]);
+        graph.node_mut(input).unwrap().params.insert("identifier".into(), Value::Text(identifier.into()));
+        graph.input_images.insert(identifier.into(), identifier.into());
+        let output = graph.add_node("output", [0.0; 2]);
+        graph.connect(input, "output", output, "input").unwrap();
+        outputs.push(output);
+    }
+
+    let mut package = Package::new("Preview selection");
+    package.graphs.push(graph);
+    let mut counts = Vec::new();
+    for (selected, expected) in [(vec![outputs[0], outputs[3]], 0.25), (vec![outputs[1]], 0.5), (vec![outputs[2]], 0.75)] {
+        let buffers = Mutex::new(Vec::new());
+        let peak_planes = std::sync::atomic::AtomicUsize::new(0);
+        let read_preview = |name: &str| {
+            let value = match craft_texture::split_resource_key(name).0 {
+                "height" => 0.25,
+                "roughness" => 0.5,
+                "normal" => 0.75,
+                other => panic!("unexpected preview {other}"),
+            };
+            let image = Image::filled(1024, 1024, Kind::Gray, [value; 4]);
+            let mut buffers = buffers.lock().unwrap();
+            buffers.push(std::sync::Arc::downgrade(image.shared_data()));
+            peak_planes.fetch_max(buffers.iter().filter(|plane| plane.strong_count() > 0).count(), std::sync::atomic::Ordering::Relaxed);
+            Some(image)
+        };
+        let mut options = Options::new(&read_preview);
+        options.only = Some(selected.clone());
+        let cache = Mutex::new(Cache::new(0));
+
+        let result = cook(&package, 0, &options, &cache);
+
+        for output in &outputs {
+            if selected.contains(output) {
+                assert!((result.image(*output, 0).unwrap().mean()[0] - expected).abs() < 0.005);
+            } else {
+                assert!(result.image(*output, 0).is_none());
+            }
+        }
+        let buffers = buffers.into_inner().unwrap();
+        assert!(buffers.iter().all(|buffer| buffer.upgrade().is_none()));
+        counts.push((buffers.len(), peak_planes.into_inner()));
+    }
+
+    eprintln!("Decoded and peak live 1024-square grayscale previews per selection: {counts:?}");
+    assert_eq!(counts, [(1, 1); 3]);
+}
+
+#[test]
 fn processor_tiling_variable_tracks_both_axes_and_invalidates_cached_values() {
     let mut function = materialcraft_core::FunctionGraph::default();
     function.output = Some(function.add("get_integer1", &[], Some(Value::Text("$tiling".into()))));

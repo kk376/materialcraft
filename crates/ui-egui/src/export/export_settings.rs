@@ -14,9 +14,9 @@ pub enum ExportTab {
     FromGraph,
     /// The outputs of several graphs as image files
     Batch,
-    /// A MaterialX document with its textures in a folder (#190)
+    /// A MaterialX document with its textures in a folder
     MaterialX,
-    /// The same files as MaterialX in one .mcmat archive (#190)
+    /// A published procedural graph with its source dependencies
     Mcmat,
 }
 
